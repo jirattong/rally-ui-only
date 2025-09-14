@@ -1,6 +1,6 @@
 # rally_ui
 
-A new Flutter project.
+UI for Project with MLKIT and YOLOV8.
 
 ## Getting Started
 
