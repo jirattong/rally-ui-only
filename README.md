@@ -1,6 +1,18 @@
-# rally_new
+# rally_ui
 
-A new Flutter project.
+UI for Project with MLKIT
+
+ให้ flutter create โปรเจคใหม่
+แล้ว copy pages แต่ละอันไปเพิ่ม และ copy pubspec ให้ครบ
+***quick fix dependencies ให้ครบก่อนรัน***
+
+## Setup
+- flutter 3.22 (set environment)
+- openjdk 17 
+- android studio NDK CMAKE SDK Platform_Tools
+- java (set environment)
+- dart
+
 
 ## Getting Started
 
@@ -8,9 +20,5 @@ This project is a starting point for a Flutter application.
 
 A few resources to get you started if this is your first Flutter project:
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- https://docs.flutter.dev/install/archive
+- https://developer.android.com/studio?hl=th
