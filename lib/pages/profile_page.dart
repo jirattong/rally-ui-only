@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+import 'history_page.dart'; // ✅ อย่าลืมตรวจสอบว่าไฟล์ history_page.dart อยู่โฟลเดอร์เดียวกัน
 
 /// ============ สีและสไตล์ร่วม ============
 const _bg = Color(0xFFF9EFE6);
@@ -11,16 +15,27 @@ InputDecoration _filledInput(String label, {Widget? suffix}) => InputDecoration(
       filled: true,
       fillColor: Colors.white,
       suffixIcon: suffix,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide.none,
+      ),
     );
 
 /// ============ หน้าโปรไฟล์หลัก ============
-/// ใช้เรียกด้วย route: /Profile
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
+  User? get user => FirebaseAuth.instance.currentUser;
+
   @override
   Widget build(BuildContext context) {
+    if (user == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.pushNamedAndRemoveUntil(context, '/Log_Reg', (_) => false);
+      });
+      return const SizedBox();
+    }
+
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
@@ -33,121 +48,169 @@ class ProfilePage extends StatelessWidget {
         title: const Text('Profile',
             style: TextStyle(color: _titleColor, fontWeight: FontWeight.w900)),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        children: [
-          // ส่วนหัวโปรไฟล์ + สถิติ
-          Container(
-            decoration: BoxDecoration(
-                color: _card, borderRadius: BorderRadius.circular(16)),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Row(
+      body: StreamBuilder<DocumentSnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('users')
+            .doc(user!.uid)
+            .snapshots(),
+        builder: (context, snapshot) {
+          String sessionCount = '0';
+          String totalHours = '0';
+          String displayName = user!.displayName ?? 'No Name';
+          String avatarAsset = 'assets/avatar_male.jpg';
+
+          if (snapshot.hasData && snapshot.data!.exists) {
+            final data = snapshot.data!.data() as Map<String, dynamic>;
+            final stats = data['stats'] as Map<String, dynamic>?;
+
+            if (stats != null) {
+              sessionCount = (stats['sessions'] ?? 0).toString();
+              double mins = (stats['total_minutes'] ?? 0).toDouble();
+              totalHours = (mins / 60).toStringAsFixed(1);
+            }
+
+            if (data.containsKey('username')) {
+              displayName = data['username'];
+            }
+            if (data['avatar_type'] == 'female') {
+              avatarAsset = 'assets/avatar_female.jpg';
+            }
+          }
+
+          final joinDate = user!.metadata.creationTime != null
+              ? DateFormat('MMM yyyy').format(user!.metadata.creationTime!)
+              : 'Unknown';
+
+          return ListView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                    color: _card, borderRadius: BorderRadius.circular(16)),
+                padding: const EdgeInsets.all(16),
+                child: Column(
                   children: [
-                    // Avatar ใช้ Icon ไว้ก่อน (ไม่พึ่ง assets)
-                    const CircleAvatar(
-                      radius: 36,
-                      backgroundColor: Colors.black12,
-                      child:
-                          Icon(Icons.person, size: 36, color: Colors.black54),
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 36,
+                          backgroundColor: Colors.white,
+                          backgroundImage: AssetImage(avatarAsset),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(displayName,
+                                  style: const TextStyle(
+                                      fontSize: 22,
+                                      fontWeight: FontWeight.w900,
+                                      color: _titleColor)),
+                              const SizedBox(height: 4),
+                              Text(user!.email ?? '',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: _titleColor.withOpacity(0.7))),
+                              const SizedBox(height: 2),
+                              Text('Joined $joinDate',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      color: _titleColor.withOpacity(0.7))),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.edit, color: _titleColor),
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const ProfileEditPage()),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 16),
-                    const Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('Iped Noi',
-                              style: TextStyle(
-                                  fontSize: 22, fontWeight: FontWeight.w900)),
-                          SizedBox(height: 4),
-                          Text('@yutpauv', style: TextStyle(fontSize: 13)),
-                          SizedBox(height: 2),
-                          Text('Joined Aug 2025',
-                              style: TextStyle(fontSize: 13)),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.edit, color: Colors.black87),
-                      onPressed: null, // (optional) แก้จากการ์ดบนสุด
+                    const SizedBox(height: 16),
+                    Container(height: 1, color: _titleColor.withOpacity(0.1)),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        _StatBox(value: sessionCount, label: 'Sessions'),
+                        const SizedBox(width: 24),
+                        _StatBox(value: '$totalHours hr', label: 'Total Time'),
+                        const Spacer(),
+                        const Icon(Icons.bar_chart_rounded,
+                            size: 28, color: _titleColor),
+                        const SizedBox(width: 4),
+                      ],
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                Container(height: 1, color: Colors.black.withOpacity(.15)),
-                const SizedBox(height: 12),
-                Row(
-                  children: const [
-                    _StatBox(value: '12', label: 'Session'),
-                    SizedBox(width: 24),
-                    _StatBox(value: '7 hr', label: 'Total'),
-                    Spacer(),
-                    Icon(Icons.bar_chart_rounded, size: 28),
-                    SizedBox(width: 4),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // เมนู 4 รายการ
-          _Tile(
-            icon: Icons.person_rounded,
-            label: 'Profile',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ProfileEditPage()),
-            ),
-          ),
-          _Tile(
-            icon: Icons.lock_reset_rounded,
-            label: 'Change Password',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ChangePasswordPage()),
-            ),
-          ),
-          _Tile(
-            icon: Icons.settings_applications_rounded,
-            label: 'App Setting',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const AppSettingPage()),
-            ),
-          ),
-          _Tile(
-            icon: Icons.shield_outlined,
-            label: 'Privacy',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const PrivacyPage()),
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // ปุ่มออกจากระบบ → /Log_Reg
-          SizedBox(
-            height: 46,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFD4483C),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                elevation: 0,
               ),
-              onPressed: () {
-                // TODO: เคลียร์ token/session ที่นี่
-                Navigator.pushNamedAndRemoveUntil(
-                    context, '/Log_Reg', (route) => false);
-              },
-              child: const Text('Log Out',
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-            ),
-          ),
-        ],
+              const SizedBox(height: 16),
+
+              // ✅ เพิ่มปุ่ม Activity History ตรงนี้ (อันดับแรก)
+              _Tile(
+                icon: Icons.history_rounded,
+                label: 'Activity History',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HistoryPage()),
+                ),
+              ),
+
+              _Tile(
+                icon: Icons.person_rounded,
+                label: 'Edit Profile',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfileEditPage()),
+                ),
+              ),
+              _Tile(
+                icon: Icons.lock_reset_rounded,
+                label: 'Change Password',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ChangePasswordPage()),
+                ),
+              ),
+              _Tile(
+                icon: Icons.shield_outlined,
+                label: 'Privacy',
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const PrivacyPage()),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 46,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFD4483C),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                  onPressed: () async {
+                    await FirebaseAuth.instance.signOut();
+                    if (context.mounted) {
+                      Navigator.pushNamedAndRemoveUntil(
+                          context, '/Log_Reg', (route) => false);
+                    }
+                  },
+                  child: const Text('Log Out',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                          color: Colors.white)),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -163,9 +226,13 @@ class _StatBox extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(value,
+              style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w900,
+                  color: _titleColor)),
+          Text(label,
               style:
-                  const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
-          Text(label, style: const TextStyle(fontSize: 12)),
+                  TextStyle(fontSize: 12, color: _titleColor.withOpacity(0.7))),
         ],
       );
 }
@@ -187,39 +254,62 @@ class _Tile extends StatelessWidget {
             height: 42,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
-              color: Colors.black12.withOpacity(.15),
+              color: _titleColor.withOpacity(0.1),
             ),
-            child: Icon(icon, color: Colors.black87),
+            child: Icon(icon, color: _titleColor),
           ),
           title: Text(label,
-              style:
-                  const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-          trailing: const Icon(Icons.chevron_right),
+              style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  color: _titleColor)),
+          trailing: const Icon(Icons.chevron_right, color: _titleColor),
           onTap: onTap,
         ),
       );
 }
 
-/// ============ หน้าแก้ไขโปรไฟล์ ============
-/// (ชื่อ, อีเมล, วันเกิด, เปลี่ยนรูป — เป็น stub)
+/// ============ หน้าแก้ไขโปรไฟล์ (Avatar + Info) ============
 class ProfileEditPage extends StatefulWidget {
   const ProfileEditPage({super.key});
-
   @override
   State<ProfileEditPage> createState() => _ProfileEditPageState();
 }
 
 class _ProfileEditPageState extends State<ProfileEditPage> {
   final _formKey = GlobalKey<FormState>();
-  final _name = TextEditingController(text: 'Iped Noi');
-  final _email = TextEditingController(text: 'ipednoi@example.com');
+  final _name = TextEditingController();
+  final _email = TextEditingController();
   DateTime? _dob;
+  User? get user => FirebaseAuth.instance.currentUser;
+  bool _isLoading = false;
+  String _selectedAvatar = 'male';
 
   @override
-  void dispose() {
-    _name.dispose();
-    _email.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _loadUserData();
+  }
+
+  Future<void> _loadUserData() async {
+    if (user != null) {
+      _name.text = user!.displayName ?? '';
+      _email.text = user!.email ?? '';
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user!.uid)
+          .get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        if (data.containsKey('dob')) {
+          final timestamp = data['dob'] as Timestamp?;
+          if (timestamp != null) setState(() => _dob = timestamp.toDate());
+        }
+        if (data.containsKey('avatar_type')) {
+          setState(() => _selectedAvatar = data['avatar_type']);
+        }
+      }
+    }
   }
 
   Future<void> _pickDob() async {
@@ -228,25 +318,36 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       context: context,
       firstDate: DateTime(1950),
       lastDate: DateTime(now.year - 5),
-      initialDate: DateTime(2000, 1, 1),
+      initialDate: _dob ?? DateTime(2000, 1, 1),
     );
     if (picked != null) setState(() => _dob = picked);
   }
 
-  void _pickAvatar() {
-    // TODO: เปิดกล้อง/แกลเลอรีจริง
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('TODO: Pick avatar')),
-    );
-  }
-
-  void _save() {
+  Future<void> _save() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    // TODO: ส่งข้อมูลไป backend
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Saved (stub)')),
-    );
-    Navigator.pop(context);
+    setState(() => _isLoading = true);
+    try {
+      if (user?.displayName != _name.text) {
+        await user?.updateDisplayName(_name.text);
+      }
+      await FirebaseFirestore.instance.collection('users').doc(user!.uid).set({
+        'username': _name.text,
+        'dob': _dob,
+        'avatar_type': _selectedAvatar,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Profile updated successfully')));
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -263,85 +364,101 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         title: const Text('Edit Profile',
             style: TextStyle(color: _titleColor, fontWeight: FontWeight.w900)),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        children: [
-          Container(
-            decoration: BoxDecoration(
-                color: _card, borderRadius: BorderRadius.circular(16)),
-            padding: const EdgeInsets.all(16),
-            child: Column(
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
               children: [
-                Stack(
-                  alignment: Alignment.bottomRight,
-                  children: [
-                    const CircleAvatar(
-                      radius: 44,
-                      backgroundColor: Colors.black12,
-                      child:
-                          Icon(Icons.person, size: 44, color: Colors.black54),
-                    ),
-                    IconButton.filled(
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black.withOpacity(.75),
-                      ),
-                      icon: const Icon(Icons.camera_alt, color: Colors.white),
-                      onPressed: _pickAvatar,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Form(
-                  key: _formKey,
+                Container(
+                  decoration: BoxDecoration(
+                      color: _card, borderRadius: BorderRadius.circular(16)),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
                     children: [
-                      TextFormField(
-                        controller: _name,
-                        decoration: _filledInput('Full name'),
-                        validator: (v) =>
-                            (v == null || v.trim().isEmpty) ? 'Required' : null,
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _email,
-                        decoration: _filledInput('Email'),
-                        keyboardType: TextInputType.emailAddress,
-                        validator: (v) => (v == null || !v.contains('@'))
-                            ? 'Invalid email'
-                            : null,
-                      ),
-                      const SizedBox(height: 12),
-                      GestureDetector(
-                        onTap: _pickDob,
-                        child: AbsorbPointer(
-                          child: TextFormField(
-                            decoration: _filledInput(
-                              'Birthday',
-                              suffix: const Icon(Icons.calendar_today_rounded),
-                            ),
-                            controller: TextEditingController(
-                              text: _dob == null
-                                  ? ''
-                                  : '${_dob!.year}-${_dob!.month.toString().padLeft(2, '0')}-${_dob!.day.toString().padLeft(2, '0')}',
-                            ),
-                          ),
-                        ),
-                      ),
+                      const Text("Choose your avatar",
+                          style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black54)),
                       const SizedBox(height: 16),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 46,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _accent,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12)),
-                            elevation: 0,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _AvatarOption(
+                            assetPath: 'assets/avatar_male.jpg',
+                            label: 'Male',
+                            isSelected: _selectedAvatar == 'male',
+                            onTap: () =>
+                                setState(() => _selectedAvatar = 'male'),
                           ),
-                          onPressed: _save,
-                          child: const Text('Save',
-                              style: TextStyle(
-                                  fontWeight: FontWeight.w800, fontSize: 16)),
+                          const SizedBox(width: 24),
+                          _AvatarOption(
+                            assetPath: 'assets/avatar_female.jpg',
+                            label: 'Female',
+                            isSelected: _selectedAvatar == 'female',
+                            onTap: () =>
+                                setState(() => _selectedAvatar = 'female'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                      Form(
+                        key: _formKey,
+                        child: Column(
+                          children: [
+                            TextFormField(
+                              controller: _name,
+                              decoration: _filledInput('Full name'),
+                              validator: (v) => (v == null || v.trim().isEmpty)
+                                  ? 'Required'
+                                  : null,
+                            ),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _email,
+                              enabled: false,
+                              decoration: _filledInput('Email (Locked)'),
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                            const SizedBox(height: 12),
+                            GestureDetector(
+                              onTap: _pickDob,
+                              child: AbsorbPointer(
+                                child: TextFormField(
+                                  decoration: _filledInput(
+                                    'Birthday',
+                                    suffix: const Icon(
+                                        Icons.calendar_today_rounded),
+                                  ),
+                                  controller: TextEditingController(
+                                    text: _dob == null
+                                        ? ''
+                                        : DateFormat('yyyy-MM-dd')
+                                            .format(_dob!),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 46,
+                              child: ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: _accent,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                  elevation: 0,
+                                ),
+                                onPressed: _save,
+                                child: const Text('Save',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 16,
+                                        color: Colors.white)),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
@@ -349,14 +466,55 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+class _AvatarOption extends StatelessWidget {
+  final String assetPath;
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+  const _AvatarOption(
+      {required this.assetPath,
+      required this.label,
+      required this.isSelected,
+      required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: isSelected ? Colors.deepOrange : Colors.transparent,
+                width: 3,
+              ),
+            ),
+            child: CircleAvatar(
+              radius: 40,
+              backgroundColor: Colors.white,
+              backgroundImage: AssetImage(assetPath),
+            ),
           ),
+          const SizedBox(height: 8),
+          Text(label,
+              style: TextStyle(
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                color: isSelected ? Colors.deepOrange : Colors.black54,
+              )),
         ],
       ),
     );
   }
 }
 
-/// ============ หน้าเปลี่ยนรหัสผ่าน ============
+/// ============ หน้าเปลี่ยนรหัสผ่าน (มี Re-authen) ============
 class ChangePasswordPage extends StatefulWidget {
   const ChangePasswordPage({super.key});
   @override
@@ -365,25 +523,47 @@ class ChangePasswordPage extends StatefulWidget {
 
 class _ChangePasswordPageState extends State<ChangePasswordPage> {
   final _formKey = GlobalKey<FormState>();
-  final _current = TextEditingController();
+  final _current = TextEditingController(); // ช่องใส่รหัสเก่า
   final _new = TextEditingController();
   final _confirm = TextEditingController();
   bool _show = false;
+  bool _isLoading = false;
 
-  @override
-  void dispose() {
-    _current.dispose();
-    _new.dispose();
-    _confirm.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
+  Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
-    // TODO: เปลี่ยนรหัสจริง
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('Password changed (stub)')));
-    Navigator.pop(context);
+    if (_new.text != _confirm.text) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('New passwords do not match')));
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      // สร้าง Credential จากรหัสเก่าที่ User กรอก
+      final cred = EmailAuthProvider.credential(
+          email: user!.email!, password: _current.text);
+
+      // 1. Re-authenticate (ยืนยันว่าเป็นเจ้าของบัญชีจริง)
+      await user.reauthenticateWithCredential(cred);
+
+      // 2. ถ้าผ่าน ถึงยอมให้เปลี่ยนรหัสใหม่
+      await user.updatePassword(_new.text);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Password updated successfully')));
+        Navigator.pop(context);
+      }
+    } on FirebaseAuthException catch (e) {
+      if (mounted) {
+        String msg = e.message ?? 'Error';
+        if (e.code == 'wrong-password') msg = 'Incorrect current password.';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -400,59 +580,51 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
         title: const Text('Change Password',
             style: TextStyle(color: _titleColor, fontWeight: FontWeight.w900)),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        children: [
-          Container(
-            decoration: BoxDecoration(
-                color: _card, borderRadius: BorderRadius.circular(16)),
-            padding: const EdgeInsets.all(16),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                children: [
-                  _pwdField(_current, 'Current password'),
-                  const SizedBox(height: 12),
-                  _pwdField(_new, 'New password'),
-                  const SizedBox(height: 12),
-                  _pwdField(_confirm, 'Confirm new password'),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 46,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _accent,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                      onPressed: _submit,
-                      child: const Text('Update Password',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w800, fontSize: 16)),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                      color: _card, borderRadius: BorderRadius.circular(16)),
+                  padding: const EdgeInsets.all(16),
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      children: [
+                        _pwdField(_current, 'Current password'),
+                        const SizedBox(height: 12),
+                        const Divider(),
+                        const SizedBox(height: 12),
+                        _pwdField(_new, 'New password'),
+                        const SizedBox(height: 12),
+                        _pwdField(_confirm, 'Confirm new password'),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 46,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _accent,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              elevation: 0,
+                            ),
+                            onPressed: _submit,
+                            child: const Text('Update Password',
+                                style: TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                    fontSize: 16,
+                                    color: Colors.white)),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () {
-                        // TODO: forgot password flow
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('Forgot password (stub)')),
-                        );
-                      },
-                      child: const Text('Forgot password?'),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -466,82 +638,13 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
           ),
         ),
         validator: (v) =>
-            (v == null || v.length < 6) ? 'At least 6 characters' : null,
+            (v == null || v.length < 8) ? 'At least 8 characters' : null,
       );
 }
 
-/// ============ หน้า App Setting (stub พร้อมสวิตช์ตัวอย่าง) ============
-class AppSettingPage extends StatefulWidget {
-  const AppSettingPage({super.key});
-  @override
-  State<AppSettingPage> createState() => _AppSettingPageState();
-}
-
-class _AppSettingPageState extends State<AppSettingPage> {
-  bool darkMode = false;
-  bool notif = true;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bg,
-      appBar: AppBar(
-        backgroundColor: _bg,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: _accent),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text('App Setting',
-            style: TextStyle(color: _titleColor, fontWeight: FontWeight.w900)),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        children: [
-          Container(
-            decoration: BoxDecoration(
-                color: _card, borderRadius: BorderRadius.circular(16)),
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: darkMode,
-                  onChanged: (v) {
-                    setState(() => darkMode = v);
-                    // TODO: apply theme จริง
-                  },
-                  title: const Text('Dark Mode'),
-                ),
-                const Divider(height: 1),
-                SwitchListTile(
-                  value: notif,
-                  onChanged: (v) {
-                    setState(() => notif = v);
-                    // TODO: เปิด/ปิด notification จริง
-                  },
-                  title: const Text('Notifications'),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  title: const Text('Language'),
-                  subtitle: const Text('Follow system'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Language picker (stub)')),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// ============ หน้า Privacy/Terms ============
+/// ============ หน้า Privacy (คงเดิม) ============
 class PrivacyPage extends StatelessWidget {
   const PrivacyPage({super.key});
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -571,39 +674,12 @@ class PrivacyPage extends StatelessWidget {
                         TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
                 SizedBox(height: 8),
                 Text(
-                  '• เราเก็บข้อมูลบัญชีผู้ใช้ (ชื่อ อีเมล) เพื่อให้บริการและรักษาความปลอดภัย\n'
-                  '• ข้อมูลรูป/วิดีโอที่อัปโหลดใช้เพื่อการวิเคราะห์ท่าทางภายในแอปเท่านั้น\n'
-                  '• ผู้ใช้สามารถลบบัญชี/ข้อมูลได้ โดยข้อมูลบางส่วนอาจถูกเก็บตามกฎหมาย\n'
-                  '• เราใช้คุกกี้และตัววัดผลการใช้งานเพื่อปรับปรุงประสบการณ์ของผู้ใช้\n'
-                  '• การใช้งานถือว่ายอมรับข้อกำหนดและนโยบายความเป็นส่วนตัว',
+                  '• เราเก็บข้อมูลบัญชีผู้ใช้ (ชื่อ อีเมล) เพื่อให้บริการ\n'
+                  '• ข้อมูลรูป/วิดีโอใช้เพื่อการวิเคราะห์ท่าทางเท่านั้น\n'
+                  '• ผู้ใช้สามารถขอลบบัญชี/ข้อมูลได้ตลอดเวลา\n'
+                  '• เป็นโปรเจคจบสาขาวิทยาการคอมพิวเตอร์',
                 ),
-                SizedBox(height: 16),
-                Text('Contact',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                SizedBox(height: 4),
-                Text('support@rally.ai (ตัวอย่าง)'),
               ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 46,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _accent,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                elevation: 0,
-              ),
-              onPressed: () {
-                // TODO: mark accepted / save settings
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Accepted (stub)')));
-                Navigator.pop(context);
-              },
-              child: const Text('I Agree',
-                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
             ),
           ),
         ],

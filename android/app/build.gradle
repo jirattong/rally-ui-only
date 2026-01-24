@@ -1,7 +1,6 @@
 plugins {
     id "com.android.application"
     id "kotlin-android"
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
 
@@ -36,9 +35,9 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.rally_new"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
-        minSdk = flutter.minSdkVersion
+        
+        // --- แก้ไข: ปรับ minSdk เป็น 23 เพื่อรองรับ Firebase/ML Kit ได้สมบูรณ์ ---
+        minSdk = 23 
         targetSdk = flutter.targetSdkVersion
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
@@ -56,3 +55,18 @@ android {
 flutter {
     source = "../.."
 }
+
+// --- แก้ไข: จัดการ Dependencies ให้ถูกต้อง ---
+dependencies {
+    // Import the Firebase BoM
+    implementation platform('com.google.firebase:firebase-bom:34.6.0')
+
+    // Firebase Analytics
+    implementation 'com.google.firebase:firebase-analytics'
+
+    // Firebase Realtime Database (จำเป็นต้องมีตัวนี้)
+    implementation 'com.google.firebase:firebase-database'
+}
+
+// --- บรรทัดนี้ต้องอยู่ล่างสุดเสมอ ---
+apply plugin: 'com.google.gms.google-services'

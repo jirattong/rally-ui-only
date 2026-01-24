@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "410986217788",
+    "firebase_url": "https://rally-tester-01-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "rally-tester-01",
+    "storage_bucket": "rally-tester-01.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:410986217788:android:429c6cda36c4b65d119e39",
+        "android_client_info": {
+          "package_name": "com.example.rally_new"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAkTYlKvAw9-_yvWWTh75_1WbslgkR2Lcg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

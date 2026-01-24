@@ -8,15 +8,29 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  google_mlkit_pose_detection: ^0.12.1
   cupertino_icons: ^1.0.8
   camera: ^0.10.6
   permission_handler: ^11.3.1
-  image_picker: ^1.1.2
+  image_picker: ^1.1.1
+  shared_preferences: ^2.2.3
+  firebase_database: ^12.1.0
+  firebase_auth: ^6.1.4
+  cloud_firestore: ^6.1.2
+  intl: ^0.20.2
+  
+  
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/app_logo.png"
 
 flutter:
   uses-material-design: true
