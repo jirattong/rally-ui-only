@@ -148,8 +148,6 @@ class ProfilePage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-
-              // ✅ เพิ่มปุ่ม Activity History ตรงนี้ (อันดับแรก)
               _Tile(
                 icon: Icons.history_rounded,
                 label: 'Activity History',
@@ -158,7 +156,6 @@ class ProfilePage extends StatelessWidget {
                   MaterialPageRoute(builder: (_) => const HistoryPage()),
                 ),
               ),
-
               _Tile(
                 icon: Icons.person_rounded,
                 label: 'Edit Profile',
@@ -514,7 +511,7 @@ class _AvatarOption extends StatelessWidget {
   }
 }
 
-/// ============ หน้าเปลี่ยนรหัสผ่าน (มี Re-authen) ============
+/// ============ หน้าเปลี่ยนรหัสผ่าน (มี Re-authen + Strict Validation) ============
 class ChangePasswordPage extends StatefulWidget {
   const ChangePasswordPage({super.key});
   @override
@@ -528,6 +525,15 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
   final _confirm = TextEditingController();
   bool _show = false;
   bool _isLoading = false;
+
+  // 🔥 1. เพิ่มฟังก์ชันตรวจสอบความปลอดภัยรหัสผ่าน (เหมือนหน้า Register)
+  String? _validateStrict(String? v) {
+    if (v == null || v.isEmpty) return 'Required';
+    if (v.length < 8) return 'At least 8 characters'; // กฎ 1
+    if (!v.contains(RegExp(r'[0-9]'))) return 'Must contain a number'; // กฎ 2
+    if (!v.contains(RegExp(r'[A-Z]'))) return 'Must contain uppercase'; // กฎ 3
+    return null;
+  }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -558,6 +564,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
       if (mounted) {
         String msg = e.message ?? 'Error';
         if (e.code == 'wrong-password') msg = 'Incorrect current password.';
+        if (e.code == 'weak-password') msg = 'Password is too weak.';
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
       }
@@ -593,13 +600,22 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                     key: _formKey,
                     child: Column(
                       children: [
+                        // รหัสปัจจุบัน (ไม่เช็คกฎเข้มงวด)
                         _pwdField(_current, 'Current password'),
+
                         const SizedBox(height: 12),
                         const Divider(),
                         const SizedBox(height: 12),
-                        _pwdField(_new, 'New password'),
+
+                        // 🔥 รหัสใหม่ (เช็คกฎเข้มงวด)
+                        _pwdField(_new, 'New password',
+                            validator: _validateStrict),
+
                         const SizedBox(height: 12),
+
+                        // ยืนยันรหัสใหม่
                         _pwdField(_confirm, 'Confirm new password'),
+
                         const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
@@ -628,7 +644,10 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
     );
   }
 
-  Widget _pwdField(TextEditingController c, String label) => TextFormField(
+  // ✅ แก้ไข _pwdField ให้รับ Validator แบบกำหนดเองได้
+  Widget _pwdField(TextEditingController c, String label,
+          {String? Function(String?)? validator}) =>
+      TextFormField(
         controller: c,
         obscureText: !_show,
         decoration: _filledInput(label).copyWith(
@@ -637,8 +656,9 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
             onPressed: () => setState(() => _show = !_show),
           ),
         ),
-        validator: (v) =>
-            (v == null || v.length < 8) ? 'At least 8 characters' : null,
+        // ถ้าส่ง validator มาให้ใช้ ถ้าไม่ส่งให้ใช้ตัว Default (เช็คแค่ความยาว)
+        validator:
+            validator ?? (v) => (v == null || v.isEmpty) ? 'Required' : null,
       );
 }
 
