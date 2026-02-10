@@ -38,7 +38,6 @@ class PoseGesture {
     int? timestamp,
   }) : timestamp = timestamp ?? DateTime.now().millisecondsSinceEpoch;
 
-  // ✅ แก้ไข: แปลงเป็น Map เพื่อให้ Firestore ยอมรับ
   Map<String, dynamic> toMap() => {
         'id': id,
         'name': name,
@@ -137,7 +136,6 @@ class GestureStore {
   }
 
   static Future<void> _saveToFirestore(PoseGesture g) async {
-    // ปล่อย Error ทะลุเพื่อให้หน้า UI แจ้งเตือนสีแดง
     await _userGesturesRef.doc(g.id).set(g.toMap());
   }
 
@@ -312,7 +310,8 @@ class GestureStore {
     List<Offset> currentRaw,
     Map<PoseLandmarkType, PoseLandmark> currentLandmarks,
     List<PoseGesture> db, {
-    double maxIndividualDiff = 0.4,
+    // ❌ เอาค่า Default 0.4 ออกจากตรงนี้ เพราะเราจะคำนวณใหม่ข้างใน
+    double? overrideMaxDiff,
   }) {
     if (db.isEmpty) return (match: null, score: double.infinity);
 
@@ -359,6 +358,11 @@ class GestureStore {
       int count = 0;
       bool isReject = false;
 
+      // 🔥 FIX: คำนวณเพดานการคัดออก (MaxDiff) ตาม Threshold ของท่านั้นๆ
+      // สูตร: ยอมให้จุดเดียวเบี้ยวได้ไม่เกิน Threshold + 0.15 (เผื่อไว้นิดหน่อย)
+      // แต่ต้องไม่น้อยกว่า 0.4 (ค่ามาตรฐาน)
+      double dynamicMaxDiff = math.max(0.4, g.threshold + 0.15);
+
       for (final i in upperBodyIndices) {
         if (i < currentNorm.length && i < g.keypoints.length) {
           final p1 = currentNorm[i];
@@ -366,7 +370,8 @@ class GestureStore {
           if (p1 == Offset.zero || p2 == Offset.zero) continue;
           final dist = (p1 - p2).distance;
 
-          if (dist > maxIndividualDiff) {
+          // 🔥 ใช้ dynamicMaxDiff แทน 0.4
+          if (dist > dynamicMaxDiff) {
             isReject = true;
             break;
           }

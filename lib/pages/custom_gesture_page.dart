@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // 🔥 1. เพิ่ม import นี้
+import 'package:firebase_auth/firebase_auth.dart';
 import '../core/gesture_store.dart';
 import 'save_gesture_page.dart';
 
@@ -75,12 +75,10 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
     _loadAll();
   }
 
-  // 🔥 2. ฟังก์ชัน ยามเฝ้าประตู (Guest Guard)
   void _checkGuest(VoidCallback onAllowed) {
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
-      // ❌ ถ้าเป็น Guest -> เด้ง Dialog เตือน
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -108,7 +106,6 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
               ),
               onPressed: () {
                 Navigator.pop(ctx);
-                // ดีดไปหน้า Login/Register และล้างประวัติหน้าเก่า
                 Navigator.pushNamedAndRemoveUntil(
                     context, '/Log_Reg', (route) => false);
               },
@@ -119,7 +116,6 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
         ),
       );
     } else {
-      // ✅ ถ้าเป็น Member -> ให้ทำงานต่อ
       onAllowed();
     }
   }
@@ -139,7 +135,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
     final cmdCtrl = TextEditingController(text: currentCmd);
     final nameCtrl = TextEditingController(text: currentName ?? '');
     double durVal = currentDur.toDouble();
-    double thrVal = currentThreshold ?? 0.25;
+    double thrVal = currentThreshold ?? 0.4;
 
     showDialog(
       context: context,
@@ -170,8 +166,6 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                     ),
                     const SizedBox(height: 20),
                     const Divider(),
-
-                    // --- Duration Slider ---
                     Text(
                         "Hold Duration: ${(durVal / 1000).toStringAsFixed(1)}s",
                         style: const TextStyle(
@@ -185,8 +179,6 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                       activeColor: Colors.deepOrange,
                       onChanged: (val) => setStateDialog(() => durVal = val),
                     ),
-
-                    // --- Threshold Slider ---
                     if (!isDynamic) ...[
                       const SizedBox(height: 10),
                       Text("Strictness: ${((0.55 - thrVal) * 200).toInt()}%",
@@ -203,7 +195,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                       ),
                       Text(
                         allowNameEdit
-                            ? "Lower % = Loose Match\nHigher % = Strict Match"
+                            ? "Lower % = Loose Match (Easier)\nHigher % = Strict Match (Harder)"
                             : "Lower % = Low Height (Shoulder)\nHigher % = High Height (Eye/Head)",
                         style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                       ),
@@ -219,8 +211,10 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                   onPressed: () async {
                     await onSave(cmdCtrl.text.trim().toUpperCase(),
                         nameCtrl.text.trim(), durVal.toInt(), thrVal);
+
                     if (!context.mounted) return;
                     Navigator.pop(context);
+
                     _loadAll();
                   },
                   child: const Text('Save'),
@@ -347,7 +341,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
 
           const SizedBox(height: 16),
 
-          // ---------------- LEFT HAND SWIPES (NEW) ----------------
+          // ---------------- LEFT HAND SWIPES ----------------
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
             child: Text("Left Hand Motion (มือซ้าย)",
@@ -486,7 +480,6 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
           ),
 
           InkWell(
-            // 🔥 3. ครอบฟังก์ชัน _checkGuest ที่ปุ่ม Add
             onTap: () => _checkGuest(_showAddOptions),
             borderRadius: BorderRadius.circular(12),
             child: Container(
@@ -527,6 +520,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                     command: g.command,
                     holdDuration: g.holdDuration,
                     keypoints: g.keypoints,
+                    angles: g.angles,
                     thumbnailPath: g.thumbnailPath,
                     timestamp: g.timestamp,
                     isActive: val,
@@ -543,13 +537,22 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                 allowNameEdit: true,
                 isDynamic: false,
                 onSave: (newCmd, newName, newDur, newThr) async {
+                  // 1. Preserve Keypoints (List<Offset>)
+                  final List<Offset> preservedKeypoints =
+                      List<Offset>.from(g.keypoints);
+
+                  // 2. Preserve Angles (List<double>) - 🔥 KEY FIX HERE (with ?? [])
+                  final List<double> preservedAngles =
+                      List<double>.from(g.angles ?? []);
+
                   final updated = PoseGesture(
                     id: g.id,
                     name: newName,
                     command: newCmd,
                     holdDuration: newDur,
                     threshold: newThr,
-                    keypoints: g.keypoints,
+                    keypoints: preservedKeypoints,
+                    angles: preservedAngles, // ✅ ส่งค่ามุมที่ก๊อปปี้มา
                     thumbnailPath: g.thumbnailPath,
                     timestamp: g.timestamp,
                     isActive: g.isActive,
@@ -565,9 +568,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
   }
 }
 
-// ... (Classes _PresetTile และ _CustomGestureTile เหมือนเดิม) ...
-// เพื่อความสะดวก ผมยังคงไว้ให้ด้านล่างนี้ครับ
-
+// Widget สำหรับแสดง Preset
 class _PresetTile extends StatelessWidget {
   final IconData icon;
   final String name;
@@ -625,6 +626,7 @@ class _PresetTile extends StatelessWidget {
   }
 }
 
+// Widget สำหรับแสดง Custom Gesture
 class _CustomGestureTile extends StatelessWidget {
   final PoseGesture item;
   final VoidCallback onDelete;

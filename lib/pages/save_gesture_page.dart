@@ -1,6 +1,7 @@
-import 'dart:async'; // ✅ เพิ่ม Timer
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui show Image, decodeImageFromList;
+import 'dart:math' as math; // ✅ เพิ่ม Import นี้สำหรับการกลับด้านรูป
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -49,7 +50,6 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
   bool _capturing = false;
   bool _ready = false;
 
-  // 🔥 เพิ่มตัวแปรสำหรับ Timer
   Timer? _timer;
   int _countdown = 3;
   bool _isCountingDown = false;
@@ -62,7 +62,6 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
 
   Future<void> _initPoseAndCamera() async {
     _poseSingle = PoseService();
-    // ใช้ Accurate Model เพื่อความแม่นยำสูงสุดตอน Save
     await _poseSingle!.init(
       model: PoseDetectionModel.accurate,
       mode: PoseDetectionMode.single,
@@ -112,7 +111,7 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
 
   @override
   void dispose() {
-    _timer?.cancel(); // ✅ ยกเลิก Timer เมื่อปิดหน้า
+    _timer?.cancel();
     _cam?.dispose();
     _poseSingle?.dispose();
     _nameCtrl.dispose();
@@ -138,13 +137,12 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
     }
   }
 
-  // 🔥 ฟังก์ชันเริ่มนับถอยหลัง
   void _startTimerCapture() {
     if (_isCountingDown || _capturing) return;
 
     setState(() {
       _isCountingDown = true;
-      _countdown = 3; // เริ่มที่ 3 วินาที
+      _countdown = 3;
     });
 
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -158,7 +156,7 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
       if (_countdown <= 0) {
         timer.cancel();
         setState(() => _isCountingDown = false);
-        _capture(); // ถ่ายจริงเมื่อนับถึง 0
+        _capture();
       }
     });
   }
@@ -199,7 +197,6 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
     final nameText =
         _nameCtrl.text.trim().isEmpty ? 'My Pose' : _nameCtrl.text.trim();
 
-    // ✅ ใช้ Logic ใหม่ คำนวณ Angles เพื่อ Save ข้ามเครื่อง
     final g = GestureStore.fromPoseForStore(
       _poses.first,
       name: nameText,
@@ -265,7 +262,27 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
               borderRadius: BorderRadius.circular(18),
               child: Stack(fit: StackFit.expand, children: [
                 if (hasImage)
-                  Image.file(_selectedImage!, fit: BoxFit.cover)
+                  // 🔥🔥 แก้ไข: ใช้ Transform กลับด้านรูป ถ้าเป็นกล้องหน้า 🔥🔥
+                  Transform(
+                    alignment: Alignment.center,
+                    transform: Matrix4.rotationY(
+                      isCapture &&
+                              _cam != null &&
+                              _cams[_camIndex].lensDirection ==
+                                  CameraLensDirection.front
+                          ? math.pi // กลับด้าน 180 องศา
+                          : 0, // ไม่ต้องกลับด้าน
+                    ),
+                    child: Stack(fit: StackFit.expand, children: [
+                      Image.file(_selectedImage!, fit: BoxFit.cover),
+                      CustomPaint(
+                        painter: PoseOverlayImagePainter(
+                          poses: _poses,
+                          srcImageSize: _srcImageSize,
+                        ),
+                      ),
+                    ]),
+                  )
                 else if (isCapture && _cam != null && _cam!.value.isInitialized)
                   CameraPreview(_cam!)
                 else
@@ -283,14 +300,9 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
                     ),
                   ),
 
-                CustomPaint(
-                  painter: PoseOverlayImagePainter(
-                    poses: _poses,
-                    srcImageSize: _srcImageSize,
-                  ),
-                ),
+                // 🔥 เอา CustomPaint ตัวนอกออก เพราะย้ายไปอยู่ใน Transform แล้ว
+                // เพื่อให้เส้น Skeleton ถูกกลับด้านไปพร้อมกับรูป
 
-                // 🔥 Overlay นับถอยหลัง 3..2..1
                 if (_isCountingDown)
                   Container(
                     color: Colors.black45,
@@ -348,7 +360,6 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
             if (isCapture)
               Row(
                 children: [
-                  // ปุ่มถ่ายทันที
                   Expanded(
                     flex: 2,
                     child: _GradientButton(
@@ -358,7 +369,6 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
                     ),
                   ),
                   const SizedBox(width: 10),
-                  // 🔥 ปุ่มถ่ายแบบจับเวลา (Timer)
                   Expanded(
                     flex: 1,
                     child: _LightButton(
@@ -417,7 +427,7 @@ class _SaveGesturePageState extends State<SaveGesturePage> {
   }
 }
 
-// ---------------- Helper Widgets (เหมือนเดิม) ----------------
+// ---------------- Helper Widgets ----------------
 
 class _GradientButton extends StatelessWidget {
   const _GradientButton(
@@ -522,11 +532,6 @@ class PoseOverlayImagePainter extends CustomPainter {
       ..strokeWidth = 3;
 
     for (final p in poses) {
-      Offset pt(PoseLandmarkType t) {
-        final lm = p.landmarks[t]!;
-        return map(lm.x, lm.y);
-      }
-
       final connections = [
         [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
         [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
@@ -540,7 +545,9 @@ class PoseOverlayImagePainter extends CustomPainter {
 
       for (final pair in connections) {
         if (p.landmarks[pair[0]] != null && p.landmarks[pair[1]] != null) {
-          canvas.drawLine(pt(pair[0]), pt(pair[1]), bone);
+          final lm1 = p.landmarks[pair[0]]!;
+          final lm2 = p.landmarks[pair[1]]!;
+          canvas.drawLine(map(lm1.x, lm1.y), map(lm2.x, lm2.y), bone);
         }
       }
 

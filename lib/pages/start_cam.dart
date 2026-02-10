@@ -1,12 +1,13 @@
 import 'dart:async';
-// import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // ✅ Import Auth เพิ่ม
-import 'package:cloud_firestore/cloud_firestore.dart'; // ✅ Import Firestore เพิ่ม
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/pose_service.dart';
 import '../core/gesture_store.dart';
@@ -54,17 +55,30 @@ class _StartCamPageState extends State<StartCamPage> {
   DateTime _lastStateTime = DateTime.now();
   String _swipeDirection = "";
 
+  DateTime _lastSwipeTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime? _readyHoldStart;
+
   final int cooldownMs = 2000;
   final Map<String, int> _startAt = {};
   final Map<String, int> _cooldownUntil = {};
 
-  List<double> _lastFrameAngles = [];
+  // --------------------------------------------------------
+  // 🟢 UPDATED: เปลี่ยนจากเก็บมุม เป็นเก็บตำแหน่งจุด (Keypoints)
+  // เพื่อใช้คำนวณระยะห่างเฉพาะท่อนบน
+  // --------------------------------------------------------
+  Map<PoseLandmarkType, Offset> _lastFramePositions = {};
+
   bool _isStable = false;
   double _movementScore = 0.0;
 
-  // 🔥 ตัวแปรสำหรับเก็บสถิติ (เพิ่มใหม่) 🔥
-  DateTime? _sessionStartTime; // เวลาที่กดปุ่ม START
-  int _commandCount = 0; // นับจำนวนคำสั่งที่ส่งไป
+  DateTime? _sessionStartTime;
+  int _commandCount = 0;
+
+  String _targetIp = "192.168.1.50";
+  String _targetPort = "5000";
+
+  // ✅ Database Reference
+  final DatabaseReference _rtdbRef = FirebaseDatabase.instance.ref();
 
   @override
   void initState() {
@@ -72,9 +86,17 @@ class _StartCamPageState extends State<StartCamPage> {
     _matchedName = null;
     _initAll();
     _loadData();
+    _loadConnectionSettings();
   }
 
-  // ... (ฟังก์ชัน Load Data และ Init คงเดิม) ...
+  Future<void> _loadConnectionSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _targetIp = prefs.getString('target_ip') ?? "192.168.1.50";
+      _targetPort = prefs.getString('target_port') ?? "5000";
+    });
+  }
+
   Future<void> _loadData() async {
     _customGestures = await GestureStore.loadAll();
 
@@ -99,21 +121,21 @@ class _StartCamPageState extends State<StartCamPage> {
   String _getDefaultCmd(String key) {
     switch (key) {
       case 'SWIPE_RIGHT':
-        return 'NEXT';
+        return 'SWIPE_RIGHT';
       case 'SWIPE_LEFT':
-        return 'PREV';
+        return 'SWIPE_LEFT';
       case 'L_SWIPE_LEFT':
-        return 'VOL_DOWN';
+        return 'L_SWIPE_LEFT';
       case 'L_SWIPE_RIGHT':
-        return 'VOL_UP';
+        return 'L_SWIPE_RIGHT';
       case 'RAISE_RIGHT':
-        return 'ON';
+        return 'RAISE_RIGHT';
       case 'RAISE_LEFT':
-        return 'OFF';
+        return 'RAISE_LEFT';
       case 'RAISE_BOTH':
         return 'STOP';
       default:
-        return 'CMD';
+        return key;
     }
   }
 
@@ -122,9 +144,10 @@ class _StartCamPageState extends State<StartCamPage> {
     try {
       _cams = await availableCameras();
     } catch (e) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
       return;
     }
     final backIdx =
@@ -174,11 +197,8 @@ class _StartCamPageState extends State<StartCamPage> {
     if (_cam == null) return;
 
     if (_streaming) {
-      // 🛑 กรณี: สั่งหยุด (STOP)
       setState(() => _streaming = false);
       await _cam!.stopImageStream();
-
-      // 🔥 บันทึกข้อมูล Session ลง Firebase ทันทีที่หยุด
       await _saveSessionData();
 
       if (mounted) {
@@ -195,12 +215,10 @@ class _StartCamPageState extends State<StartCamPage> {
     }
 
     try {
-      // ▶️ กรณี: เริ่มทำงาน (START)
       setState(() => _streaming = true);
-
-      // 🔥 เริ่มจับเวลา และ รีเซ็ตตัวนับคำสั่ง
       _sessionStartTime = DateTime.now();
       _commandCount = 0;
+      _lastFramePositions.clear(); // Reset ค่าความนิ่งเมื่อเริ่มใหม่
 
       final rotation = _rotationFor(_cam!.description);
       await _cam!.startImageStream((image) async {
@@ -220,6 +238,8 @@ class _StartCamPageState extends State<StartCamPage> {
             _poses = ps;
             if (ps.isNotEmpty) {
               final pose = ps.first;
+
+              // ✅ ใช้ Logic ใหม่: เช็คความนิ่งเฉพาะท่อนบน
               _checkStability(pose);
 
               if (_isStable) {
@@ -250,25 +270,63 @@ class _StartCamPageState extends State<StartCamPage> {
     }
   }
 
-  // ... (ฟังก์ชัน Stability Check และ Banner คงเดิม) ...
+  // -----------------------------------------------------------------------
+  // 🟢 UPDATED FUNCTION: เช็คความนิ่งโดย "เมินขา" (Upper Body Only Stability)
+  // -----------------------------------------------------------------------
   void _checkStability(Pose pose) {
-    final currentAngles = PoseUtils.getPoseAngles(pose.landmarks);
-    if (currentAngles.isEmpty) {
-      _isStable = false;
+    // 1. เลือกจุด Keypoint ที่ต้องการนำมาคิด (Upper Body Only)
+    final List<PoseLandmarkType> targetLandmarks = [
+      PoseLandmarkType.nose, // จมูก (แทนศีรษะ)
+      PoseLandmarkType.leftShoulder, // ไหล่ซ้าย
+      PoseLandmarkType.rightShoulder, // ไหล่ขวา
+      PoseLandmarkType.leftElbow, // ศอกซ้าย
+      PoseLandmarkType.rightElbow, // ศอกขวา
+      PoseLandmarkType.leftWrist, // ข้อมือซ้าย
+      PoseLandmarkType.rightWrist, // ข้อมือขวา
+    ];
+
+    Map<PoseLandmarkType, Offset> currentPositions = {};
+
+    // ดึงค่าตำแหน่งปัจจุบัน
+    for (var type in targetLandmarks) {
+      final lm = pose.landmarks[type];
+      if (lm != null) {
+        currentPositions[type] = Offset(lm.x, lm.y);
+      }
+    }
+
+    // ถ้าไม่มีเฟรมก่อนหน้า ให้บันทึกแล้วจบเลย
+    if (_lastFramePositions.isEmpty) {
+      _lastFramePositions = currentPositions;
       return;
     }
-    if (_lastFrameAngles.isEmpty) {
-      _lastFrameAngles = currentAngles;
-      return;
+
+    // 2. คำนวณความนิ่ง (เทียบระยะห่างจากเฟรมที่แล้ว)
+    double totalDist = 0;
+    int count = 0;
+
+    for (var type in targetLandmarks) {
+      if (currentPositions.containsKey(type) &&
+          _lastFramePositions.containsKey(type)) {
+        final p1 = currentPositions[type]!;
+        final p2 = _lastFramePositions[type]!;
+
+        // คำนวณระยะทางที่เลื่อนไป (Pixel Distance)
+        totalDist += (p1 - p2).distance;
+        count++;
+      }
     }
-    double totalDiff = 0;
-    for (int i = 0; i < currentAngles.length; i++) {
-      totalDiff += (currentAngles[i] - _lastFrameAngles[i]).abs();
-    }
-    double avgDiff = totalDiff / currentAngles.length;
-    _movementScore = avgDiff;
-    _isStable = avgDiff < 3.0;
-    _lastFrameAngles = currentAngles;
+
+    // หาค่าเฉลี่ยการขยับตัว
+    double avgDist = count > 0 ? totalDist / count : 0.0;
+
+    // 3. อัปเดตสถานะ
+    _movementScore = avgDist;
+
+    // ตั้งค่า Threshold: น้อยกว่า 2.0 แปลว่านิ่ง (ปรับเลขนี้ได้ถ้าอยากให้ยาก/ง่ายขึ้น)
+    _isStable = avgDist < 2.0;
+
+    _lastFramePositions = currentPositions; // จำค่าไว้เทียบรอบหน้า
   }
 
   void _showBanner(String text) {
@@ -288,16 +346,35 @@ class _StartCamPageState extends State<StartCamPage> {
     }
   }
 
-  void _sendIoTCommandStr(String command) {
-    print("⚡ Sending to Firebase: $command");
-    // ✅ ส่งไปที่ 'command' (ตามที่คุณเปลี่ยนชื่อใน Firebase)
-    FirebaseDatabase.instance.ref().child('iot_device/command').set(command);
-
-    // 🔥 นับจำนวนคำสั่งที่ส่งไป
+  //  ฟังก์ชันส่งคำสั่ง (ส่งทั้ง HTTP และ Firebase RTDB)
+  Future<void> _executeCommand(String command) async {
     _commandCount++;
+    _showBanner(command); // โชว์ Banner ทันที
+
+    print("🚀 Sending Command: $command");
+
+    // 1. ส่ง HTTP (IoT Direct / Turtlesim)
+    // ตรงนี้จะยิงไปที่ Server Turtlesim ตามที่คุณตั้งค่าไว้
+    final url = Uri.parse('http://$_targetIp:$_targetPort/turtle/$command');
+    try {
+      http.get(url).timeout(const Duration(milliseconds: 500)).catchError((e) {
+        print("❌ HTTP Error: $e");
+        return http.Response('Error', 500);
+      });
+    } catch (_) {}
+
+    // 2. ส่ง Firebase Realtime Database
+    try {
+      await _rtdbRef.child('iot_device').update({
+        'command': command,
+        'last_updated': DateTime.now().toIso8601String(),
+      });
+      print("✅ Firebase RTDB Updated!");
+    } catch (e) {
+      print("❌ Firebase RTDB Error: $e");
+    }
   }
 
-  // ... (Swipe Logic คงเดิม) ...
   void _checkForSwipe(Pose pose) {
     final lm = pose.landmarks;
     final rWrist = lm[PoseLandmarkType.rightWrist];
@@ -316,15 +393,15 @@ class _StartCamPageState extends State<StartCamPage> {
     double rRatio = (rWrist.x - rShoulder.x) / shoulderWidth;
     double lRatio = (lWrist.x - lShoulder.x) / shoulderWidth;
 
-    double verticalLimit = shoulderWidth * 0.6;
+    double verticalLimit = shoulderWidth * 0.8;
     bool rVerticalOK = (rWrist.y - rShoulder.y).abs() < verticalLimit;
     bool lVerticalOK = (lWrist.y - lShoulder.y).abs() < verticalLimit;
 
-    bool r_FoldIn = rRatio > 0.8 && rVerticalOK;
-    bool r_ExtendOut = rRatio < -0.9 && rVerticalOK;
-
-    bool l_FoldIn = lRatio < -0.8 && lVerticalOK;
-    bool l_ExtendOut = lRatio > 0.9 && lVerticalOK;
+    // Mirror Fix
+    bool r_AtChest = rRatio > 0.3 && rVerticalOK;
+    bool r_AtSide = rRatio < -0.8 && rVerticalOK;
+    bool l_AtChest = lRatio < -0.3 && lVerticalOK;
+    bool l_AtSide = lRatio > 0.8 && lVerticalOK;
 
     final now = DateTime.now();
     int timeoutLimit = 1500;
@@ -338,25 +415,45 @@ class _StartCamPageState extends State<StartCamPage> {
 
     switch (_swipeState) {
       case SwipeState.idle:
-        if ((_presetActive['SWIPE_RIGHT'] ?? true) && r_FoldIn) {
-          _startSwipe(ActiveHand.right, "OUT", "Ready Swipe Right >");
-        } else if ((_presetActive['SWIPE_LEFT'] ?? true) && r_ExtendOut) {
-          _startSwipe(ActiveHand.right, "IN", "< Ready Swipe Left");
-        } else if ((_presetActive['L_SWIPE_LEFT'] ?? true) && l_FoldIn) {
-          _startSwipe(ActiveHand.left, "OUT", "< Ready L-Swipe Left");
-        } else if ((_presetActive['L_SWIPE_RIGHT'] ?? true) && l_ExtendOut) {
-          _startSwipe(ActiveHand.left, "IN", "Ready L-Swipe Right >");
+        bool isReadyRightOut =
+            (_presetActive['SWIPE_RIGHT'] ?? true) && r_AtChest;
+        bool isReadyRightIn = (_presetActive['SWIPE_LEFT'] ?? true) && r_AtSide;
+        bool isReadyLeftOut =
+            (_presetActive['L_SWIPE_LEFT'] ?? true) && l_AtChest;
+        bool isReadyLeftIn =
+            (_presetActive['L_SWIPE_RIGHT'] ?? true) && l_AtSide;
+
+        if (isReadyRightOut ||
+            isReadyRightIn ||
+            isReadyLeftOut ||
+            isReadyLeftIn) {
+          if (_readyHoldStart == null) {
+            _readyHoldStart = now;
+          } else if (now.difference(_readyHoldStart!).inMilliseconds > 200) {
+            if (isReadyRightOut)
+              _startSwipe(ActiveHand.right, "OUT", "Right Ready (>>)");
+            else if (isReadyRightIn)
+              _startSwipe(ActiveHand.right, "IN", "Right Ready (<<)");
+            else if (isReadyLeftOut)
+              _startSwipe(ActiveHand.left, "OUT", "Left Ready (<<)");
+            else if (isReadyLeftIn)
+              _startSwipe(ActiveHand.left, "IN", "Left Ready (>>)");
+
+            _readyHoldStart = null;
+          }
+        } else {
+          _readyHoldStart = null;
         }
         break;
 
       case SwipeState.phase1:
         if (_swipeHand == ActiveHand.right) {
-          if (rRatio > -0.3 && rRatio < 0.3) {
+          if (rRatio > -0.5 && rRatio < 0.5) {
             _swipeState = SwipeState.phase2;
             _lastStateTime = now;
           }
         } else if (_swipeHand == ActiveHand.left) {
-          if (lRatio > -0.3 && lRatio < 0.3) {
+          if (lRatio > -0.5 && lRatio < 0.5) {
             _swipeState = SwipeState.phase2;
             _lastStateTime = now;
           }
@@ -365,11 +462,17 @@ class _StartCamPageState extends State<StartCamPage> {
 
       case SwipeState.phase2:
         if (_swipeHand == ActiveHand.right) {
-          if (_swipeDirection == "OUT" && r_ExtendOut) _trigger("SWIPE_RIGHT");
-          if (_swipeDirection == "IN" && r_FoldIn) _trigger("SWIPE_LEFT");
+          if (_swipeDirection == "OUT" && r_AtSide) {
+            _trigger("SWIPE_RIGHT");
+          } else if (_swipeDirection == "IN" && r_AtChest) {
+            _trigger("SWIPE_LEFT");
+          }
         } else if (_swipeHand == ActiveHand.left) {
-          if (_swipeDirection == "OUT" && l_ExtendOut) _trigger("L_SWIPE_LEFT");
-          if (_swipeDirection == "IN" && l_FoldIn) _trigger("L_SWIPE_RIGHT");
+          if (_swipeDirection == "OUT" && l_AtSide) {
+            _trigger("L_SWIPE_LEFT");
+          } else if (_swipeDirection == "IN" && l_AtChest) {
+            _trigger("L_SWIPE_RIGHT");
+          }
         }
         break;
     }
@@ -385,22 +488,26 @@ class _StartCamPageState extends State<StartCamPage> {
   }
 
   void _trigger(String key) {
-    final cmd = _presetCmds[key] ?? "CMD";
-    _sendIoTCommandStr(cmd);
-    _showBanner("$key ($cmd)");
+    final cmd = _presetCmds[key] ?? key;
+    _executeCommand(cmd); // ✅ เรียกใช้ฟังก์ชันกลาง
+
+    _lastSwipeTime = DateTime.now();
     _swipeState = SwipeState.idle;
     _swipeHand = ActiveHand.none;
   }
 
-  // ... (Evaluate Hold Gestures คงเดิม) ...
   void _evaluateHoldGestures(Pose pose) {
+    if (DateTime.now().difference(_lastSwipeTime).inMilliseconds < 2000) {
+      return;
+    }
+
     if (_swipeState != SwipeState.idle) return;
 
     final currentAngles = PoseUtils.getPoseAngles(pose.landmarks);
     if (currentAngles.isEmpty) return;
 
-    // Custom Gestures logic
     final rawPoints = poseToOffsets(pose);
+
     final matchResult = GestureStore.bestMatch(
       rawPoints,
       pose.landmarks,
@@ -409,8 +516,7 @@ class _StartCamPageState extends State<StartCamPage> {
 
     if (matchResult.match != null) {
       final g = matchResult.match!;
-      _checkHold("CUSTOM_${g.id}", true, g.command, g.holdDuration,
-          "Match: ${g.name}");
+      _checkHold("CUSTOM_${g.id}", true, g.command, g.holdDuration, g.command);
 
       if (_swipeState == SwipeState.idle) {
         _debugInfo = "Hold: ${g.name}";
@@ -419,7 +525,6 @@ class _StartCamPageState extends State<StartCamPage> {
       return;
     }
 
-    // Static Presets Logic
     final lm = pose.landmarks;
     if (!lm.containsKey(PoseLandmarkType.leftWrist) ||
         !lm.containsKey(PoseLandmarkType.rightWrist) ||
@@ -457,13 +562,9 @@ class _StartCamPageState extends State<StartCamPage> {
     bool raiseBoth = isRightBoth && isLeftBoth;
 
     if ((_presetActive['RAISE_BOTH'] ?? true) && raiseBoth) {
+      final cmd = _presetCmds['RAISE_BOTH'] ?? 'STOP';
       _checkHold(
-          "PRESET_BOTH",
-          true,
-          _presetCmds['RAISE_BOTH'] ?? 'STOP',
-          _presetDurs['RAISE_BOTH'] ?? 1000,
-          "Both Hands (${_presetCmds['RAISE_BOTH']})");
-
+          "PRESET_BOTH", true, cmd, _presetDurs['RAISE_BOTH'] ?? 1000, cmd);
       _debugInfo = "Raising BOTH";
       _debugColor = Colors.cyan;
       return;
@@ -472,30 +573,27 @@ class _StartCamPageState extends State<StartCamPage> {
     }
 
     if (_presetActive['RAISE_RIGHT'] ?? true) {
-      _checkHold(
-          "PRESET_ON",
-          isRightHigh,
-          _presetCmds['RAISE_RIGHT'] ?? 'ON',
-          _presetDurs['RAISE_RIGHT'] ?? 1000,
-          "Right Hand (${_presetCmds['RAISE_RIGHT']})");
+      final cmd = _presetCmds['RAISE_RIGHT'] ?? 'RAISE_RIGHT';
+      _checkHold("PRESET_ON", isRightHigh, cmd,
+          _presetDurs['RAISE_RIGHT'] ?? 1000, cmd);
     }
 
     if (_presetActive['RAISE_LEFT'] ?? true) {
-      _checkHold(
-          "PRESET_OFF",
-          isLeftHigh,
-          _presetCmds['RAISE_LEFT'] ?? 'OFF',
-          _presetDurs['RAISE_LEFT'] ?? 1000,
-          "Left Hand (${_presetCmds['RAISE_LEFT']})");
+      final cmd = _presetCmds['RAISE_LEFT'] ?? 'RAISE_LEFT';
+      _checkHold("PRESET_OFF", isLeftHigh, cmd,
+          _presetDurs['RAISE_LEFT'] ?? 1000, cmd);
     }
 
     if (matchResult.match == null && _swipeState == SwipeState.idle) {
-      if (isRightHigh) {
+      if (isRightHigh && (_presetActive['RAISE_RIGHT'] ?? true)) {
         _debugInfo = "Raising RIGHT";
         _debugColor = Colors.green;
-      } else if (isLeftHigh) {
+      } else if (isLeftHigh && (_presetActive['RAISE_LEFT'] ?? true)) {
         _debugInfo = "Raising LEFT";
         _debugColor = Colors.green;
+      } else if (raiseBoth && (_presetActive['RAISE_BOTH'] ?? true)) {
+        _debugInfo = "Raising BOTH";
+        _debugColor = Colors.cyan;
       } else {
         _debugInfo = "Stable (Waiting)";
         _debugColor = Colors.white;
@@ -516,8 +614,8 @@ class _StartCamPageState extends State<StartCamPage> {
       if (!_startAt.containsKey(uniqueId)) {
         _startAt[uniqueId] = nowMs;
       } else if (nowMs - _startAt[uniqueId]! >= duration) {
-        _sendIoTCommandStr(cmdToSend);
-        _showBanner(bannerText);
+        // ✅ เรียกฟังก์ชันกลาง (ส่งทั้ง HTTP และ RTDB)
+        _executeCommand(cmdToSend);
 
         _cooldownUntil[uniqueId] = nowMs + cooldownMs;
         _startAt.remove(uniqueId);
@@ -531,7 +629,6 @@ class _StartCamPageState extends State<StartCamPage> {
     if (_cams.length < 2) return;
     final wasStreaming = _streaming;
     if (wasStreaming) {
-      // ถ้าสตรีมอยู่ ต้องหยุดก่อน (ซึ่งมันจะเซฟ Session ให้อัตโนมัติในฟังก์ชัน _toggleStream)
       await _toggleStream();
     }
     _camIndex = (_camIndex + 1) % _cams.length;
@@ -540,7 +637,6 @@ class _StartCamPageState extends State<StartCamPage> {
     if (mounted) setState(() {});
   }
 
-  // 🔥 หัวใจสำคัญ: ฟังก์ชันบันทึกข้อมูล Session ลง Firestore 🔥
   Future<void> _saveSessionData() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || _sessionStartTime == null) return;
@@ -548,30 +644,26 @@ class _StartCamPageState extends State<StartCamPage> {
     final endTime = DateTime.now();
     final durationSeconds = endTime.difference(_sessionStartTime!).inSeconds;
 
-    // ถ้าเล่นน้อยกว่า 5 วินาที ไม่ต้องบันทึก (กันคนกดผิด)
     if (durationSeconds < 5) return;
 
-    // 1. คำนวณเป็นนาที (สำหรับ Profile Stats)
     final double minutesPlayed = durationSeconds / 60.0;
 
     try {
       final userRef =
           FirebaseFirestore.instance.collection('users').doc(user.uid);
 
-      // ✅ อัปเดต Stats รวม (บวกเพิ่มเข้าไป)
       await userRef.set({
         'stats': {
-          'sessions': FieldValue.increment(1), // บวกจำนวนครั้ง +1
-          'total_minutes': FieldValue.increment(minutesPlayed), // บวกเวลาเพิ่ม
+          'sessions': FieldValue.increment(1),
+          'total_minutes': FieldValue.increment(minutesPlayed),
         }
       }, SetOptions(merge: true));
 
-      // ✅ สร้างประวัติใหม่ใน Sub-collection 'history'
       await userRef.collection('history').add({
         'started_at': _sessionStartTime,
         'ended_at': endTime,
         'duration_seconds': durationSeconds,
-        'commands_count': _commandCount, // จำนวนคำสั่งที่ส่งไป
+        'commands_count': _commandCount,
       });
 
       debugPrint(
@@ -583,7 +675,6 @@ class _StartCamPageState extends State<StartCamPage> {
 
   @override
   void dispose() {
-    // 🔥 ถ้ากด Back ออกหน้านี้โดยที่ยังสตรีมอยู่ ให้หยุดและบันทึกด้วย
     if (_streaming) {
       _saveSessionData();
     }
@@ -595,8 +686,6 @@ class _StartCamPageState extends State<StartCamPage> {
 
   @override
   Widget build(BuildContext context) {
-    // ... (ส่วน UI เหมือนเดิมทุกประการ) ...
-    // ก๊อปปี้ส่วน UI มาให้ครบเพื่อให้ไฟล์สมบูรณ์ครับ
     final controller = _cam;
     return Scaffold(
       backgroundColor: bg,
@@ -658,7 +747,6 @@ class _StartCamPageState extends State<StartCamPage> {
                         Text("Score: ${_movementScore.toStringAsFixed(1)}",
                             style: const TextStyle(
                                 color: Colors.grey, fontSize: 10)),
-                        // โชว์จำนวนคำสั่งที่ส่งไป
                         if (_streaming && _sessionStartTime != null) ...[
                           const SizedBox(height: 4),
                           Text("Cmds: $_commandCount",
@@ -719,6 +807,7 @@ class _StartCamPageState extends State<StartCamPage> {
   }
 }
 
+// (Helper Painter Class) - ยังวาดขาเหมือนเดิมตามที่ต้องการ
 class PoseOverlayPainter extends CustomPainter {
   final List<Pose> _poses;
   final Size? imageSize;
