@@ -63,10 +63,14 @@ class _StartCamPageState extends State<StartCamPage> {
   final Map<String, int> _cooldownUntil = {};
 
   // --------------------------------------------------------
-  // 🟢 UPDATED: เปลี่ยนจากเก็บมุม เป็นเก็บตำแหน่งจุด (Keypoints)
-  // เพื่อใช้คำนวณระยะห่างเฉพาะท่อนบน
+  // 🟢 SMOOTHING SYSTEM VARIABLES
   // --------------------------------------------------------
-  Map<PoseLandmarkType, Offset> _lastFramePositions = {};
+  // เก็บประวัติตำแหน่ง 8 เฟรมย้อนหลังเพื่อหาค่าเฉลี่ย
+  final List<Map<PoseLandmarkType, Offset>> _poseHistory = [];
+  static const int _smoothWindow = 8; // ยิ่งเยอะยิ่งนิ่ง (แนะนำ 6-10)
+
+  // เก็บค่าตำแหน่งที่ Smooth แล้วของเฟรมที่ผ่านมา (เอาไว้เทียบหาความนิ่ง)
+  Map<PoseLandmarkType, Offset> _lastSmoothedPositions = {};
 
   bool _isStable = false;
   double _movementScore = 0.0;
@@ -86,7 +90,7 @@ class _StartCamPageState extends State<StartCamPage> {
     _matchedName = null;
     _initAll();
     _loadData();
-    _loadConnectionSettings();
+    _loadConnectionSettings(); // ✅ โหลด IP ที่บันทึกไว้
   }
 
   Future<void> _loadConnectionSettings() async {
@@ -95,6 +99,7 @@ class _StartCamPageState extends State<StartCamPage> {
       _targetIp = prefs.getString('target_ip') ?? "192.168.1.50";
       _targetPort = prefs.getString('target_port') ?? "5000";
     });
+    print("📡 Loaded Connection: $_targetIp:$_targetPort");
   }
 
   Future<void> _loadData() async {
@@ -215,10 +220,15 @@ class _StartCamPageState extends State<StartCamPage> {
     }
 
     try {
+      // ✅ โหลด Setting ล่าสุดทุกครั้งที่กด Start (กันลืม)
+      await _loadConnectionSettings();
+
       setState(() => _streaming = true);
       _sessionStartTime = DateTime.now();
       _commandCount = 0;
-      _lastFramePositions.clear(); // Reset ค่าความนิ่งเมื่อเริ่มใหม่
+
+      _poseHistory.clear(); // ล้างประวัติ Smoothing
+      _lastSmoothedPositions.clear();
 
       final rotation = _rotationFor(_cam!.description);
       await _cam!.startImageStream((image) async {
@@ -239,7 +249,7 @@ class _StartCamPageState extends State<StartCamPage> {
             if (ps.isNotEmpty) {
               final pose = ps.first;
 
-              // ✅ ใช้ Logic ใหม่: เช็คความนิ่งเฉพาะท่อนบน
+              // ✅ ใช้ Logic ใหม่: Smoothing + Upper Body Check
               _checkStability(pose);
 
               if (_isStable) {
@@ -256,6 +266,7 @@ class _StartCamPageState extends State<StartCamPage> {
             } else {
               _debugInfo = "No Person";
               _debugColor = Colors.red;
+              _poseHistory.clear(); // ถ้าคนหาย ให้ล้างประวัติ
             }
             setState(() {});
           }
@@ -271,62 +282,93 @@ class _StartCamPageState extends State<StartCamPage> {
   }
 
   // -----------------------------------------------------------------------
-  // 🟢 UPDATED FUNCTION: เช็คความนิ่งโดย "เมินขา" (Upper Body Only Stability)
+  // 🟢 SMOOTHING HELPER FUNCTION
+  // -----------------------------------------------------------------------
+  Map<PoseLandmarkType, Offset> _getSmoothedLandmarks(
+      Map<PoseLandmarkType, Offset> current) {
+    _poseHistory.add(current);
+    if (_poseHistory.length > _smoothWindow) {
+      _poseHistory.removeAt(0); // เอาเฟรมเก่าสุดออก
+    }
+
+    Map<PoseLandmarkType, Offset> smoothed = {};
+
+    // วนลูปหาค่าเฉลี่ยทุกจุดที่มีในเฟรมปัจจุบัน
+    for (var type in current.keys) {
+      double sumX = 0;
+      double sumY = 0;
+      int count = 0;
+
+      for (var frame in _poseHistory) {
+        if (frame.containsKey(type)) {
+          sumX += frame[type]!.dx;
+          sumY += frame[type]!.dy;
+          count++;
+        }
+      }
+
+      if (count > 0) {
+        smoothed[type] = Offset(sumX / count, sumY / count);
+      }
+    }
+    return smoothed;
+  }
+
+  // -----------------------------------------------------------------------
+  // 🟢 UPDATED: Check Stability with SMOOTHING & Higher Threshold
   // -----------------------------------------------------------------------
   void _checkStability(Pose pose) {
-    // 1. เลือกจุด Keypoint ที่ต้องการนำมาคิด (Upper Body Only)
     final List<PoseLandmarkType> targetLandmarks = [
-      PoseLandmarkType.nose, // จมูก (แทนศีรษะ)
-      PoseLandmarkType.leftShoulder, // ไหล่ซ้าย
-      PoseLandmarkType.rightShoulder, // ไหล่ขวา
-      PoseLandmarkType.leftElbow, // ศอกซ้าย
-      PoseLandmarkType.rightElbow, // ศอกขวา
-      PoseLandmarkType.leftWrist, // ข้อมือซ้าย
-      PoseLandmarkType.rightWrist, // ข้อมือขวา
+      PoseLandmarkType.nose,
+      PoseLandmarkType.leftShoulder,
+      PoseLandmarkType.rightShoulder,
+      PoseLandmarkType.leftElbow,
+      PoseLandmarkType.rightElbow,
+      PoseLandmarkType.leftWrist,
+      PoseLandmarkType.rightWrist,
     ];
 
-    Map<PoseLandmarkType, Offset> currentPositions = {};
-
-    // ดึงค่าตำแหน่งปัจจุบัน
+    // 1. ดึงค่าดิบ (Raw Data)
+    Map<PoseLandmarkType, Offset> rawPositions = {};
     for (var type in targetLandmarks) {
       final lm = pose.landmarks[type];
       if (lm != null) {
-        currentPositions[type] = Offset(lm.x, lm.y);
+        rawPositions[type] = Offset(lm.x, lm.y);
       }
     }
 
-    // ถ้าไม่มีเฟรมก่อนหน้า ให้บันทึกแล้วจบเลย
-    if (_lastFramePositions.isEmpty) {
-      _lastFramePositions = currentPositions;
+    // 2. แปลงเป็นค่าที่นิ่งแล้ว (Smoothed Data) ✅
+    Map<PoseLandmarkType, Offset> currentSmoothed =
+        _getSmoothedLandmarks(rawPositions);
+
+    if (_lastSmoothedPositions.isEmpty) {
+      _lastSmoothedPositions = currentSmoothed;
       return;
     }
 
-    // 2. คำนวณความนิ่ง (เทียบระยะห่างจากเฟรมที่แล้ว)
+    // 3. คำนวณความนิ่ง (เทียบค่า Smooth ปัจจุบัน กับ Smooth อดีต)
     double totalDist = 0;
     int count = 0;
 
     for (var type in targetLandmarks) {
-      if (currentPositions.containsKey(type) &&
-          _lastFramePositions.containsKey(type)) {
-        final p1 = currentPositions[type]!;
-        final p2 = _lastFramePositions[type]!;
+      if (currentSmoothed.containsKey(type) &&
+          _lastSmoothedPositions.containsKey(type)) {
+        final p1 = currentSmoothed[type]!;
+        final p2 = _lastSmoothedPositions[type]!;
 
-        // คำนวณระยะทางที่เลื่อนไป (Pixel Distance)
         totalDist += (p1 - p2).distance;
         count++;
       }
     }
 
-    // หาค่าเฉลี่ยการขยับตัว
     double avgDist = count > 0 ? totalDist / count : 0.0;
-
-    // 3. อัปเดตสถานะ
     _movementScore = avgDist;
 
-    // ตั้งค่า Threshold: น้อยกว่า 2.0 แปลว่านิ่ง (ปรับเลขนี้ได้ถ้าอยากให้ยาก/ง่ายขึ้น)
-    _isStable = avgDist < 2.0;
+    // 4. ปรับ Threshold ให้ใจดีขึ้น (จาก 2.0 เป็น 4.0) ✅
+    // ช่วยให้ผ่านง่ายขึ้นแม้กล้องมี Noise
+    _isStable = avgDist < 4.0;
 
-    _lastFramePositions = currentPositions; // จำค่าไว้เทียบรอบหน้า
+    _lastSmoothedPositions = currentSmoothed;
   }
 
   void _showBanner(String text) {
@@ -346,15 +388,14 @@ class _StartCamPageState extends State<StartCamPage> {
     }
   }
 
-  //  ฟังก์ชันส่งคำสั่ง (ส่งทั้ง HTTP และ Firebase RTDB)
+  //  ฟังก์ชันส่งคำสั่ง
   Future<void> _executeCommand(String command) async {
     _commandCount++;
-    _showBanner(command); // โชว์ Banner ทันที
+    _showBanner(command);
 
-    print("🚀 Sending Command: $command");
+    print("🚀 Sending Command: $command to $_targetIp:$_targetPort");
 
-    // 1. ส่ง HTTP (IoT Direct / Turtlesim)
-    // ตรงนี้จะยิงไปที่ Server Turtlesim ตามที่คุณตั้งค่าไว้
+    // 1. ส่ง HTTP (IoT Direct)
     final url = Uri.parse('http://$_targetIp:$_targetPort/turtle/$command');
     try {
       http.get(url).timeout(const Duration(milliseconds: 500)).catchError((e) {
