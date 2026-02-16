@@ -7,7 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../core/pose_utils.dart';
 
-const _prefsKey = 'pose_gestures_v6_threshold';
+const _prefsKey = 'pose_gestures_v6_knn';
 const _presetCmdKey = 'preset_commands_map';
 const _presetDurKey = 'preset_durations_map';
 const _presetActiveKey = 'preset_active_map';
@@ -89,6 +89,8 @@ class PoseGesture {
 class GestureStore {
   static User? get _user => FirebaseAuth.instance.currentUser;
 
+  // ---------------- Load / Save / Delete ----------------
+
   static Future<List<PoseGesture>> loadAll() async {
     if (_user != null) {
       return _loadFromFirestore();
@@ -113,7 +115,134 @@ class GestureStore {
     }
   }
 
-  // ---------------- Cloud Logic ----------------
+  static PoseGesture fromPoseForStore(
+    Pose pose, {
+    required String name,
+    required String command,
+    int holdDuration = 1000,
+    double threshold = 0.25,
+    String? thumbnailPath,
+  }) {
+    final rawPoints = poseToOffsets(pose);
+    final normalized = normalizeByShoulder(rawPoints, pose.landmarks);
+    final calculatedAngles = PoseUtils.getPoseAngles(pose.landmarks);
+
+    return PoseGesture(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      name: name,
+      command: command,
+      holdDuration: holdDuration,
+      threshold: threshold,
+      isActive: true,
+      keypoints: normalized,
+      angles: calculatedAngles,
+      thumbnailPath: thumbnailPath,
+    );
+  }
+
+  // ---------------- 🔥 KNN MATCHING ENGINE 🔥 ----------------
+
+  static ({PoseGesture? match, double score}) bestMatch(
+    List<Offset> currentRaw,
+    Map<PoseLandmarkType, PoseLandmark> currentLandmarks,
+    List<PoseGesture> db,
+  ) {
+    if (db.isEmpty) return (match: null, score: double.infinity);
+
+    final currentAngles = PoseUtils.getPoseAngles(currentLandmarks);
+    // ถ้าองศาไม่ครบ (เช่น เห็นไม่เต็มตัว) คืนค่าว่างทันที
+    if (currentAngles.isEmpty) return (match: null, score: double.infinity);
+
+    PoseGesture? bestMatch;
+    double minScore = double.infinity;
+
+    for (final g in db) {
+      if (!g.isActive) continue;
+      if (g.angles == null || g.angles!.isEmpty) continue;
+      if (currentAngles.length != g.angles!.length) continue;
+
+      double totalDiff = 0;
+      for (int i = 0; i < currentAngles.length; i++) {
+        totalDiff += (currentAngles[i] - g.angles![i]).abs();
+      }
+      double avgDiff = totalDiff / currentAngles.length;
+
+      // แปลง Threshold เป็นองศาที่ยอมรับได้
+      // สูตร: 0.25 (Standard) -> ยอมผิด 25 องศา
+      double allowedDiff = 50.0 - (g.threshold * 100.0);
+      if (allowedDiff < 10) allowedDiff = 10;
+
+      if (avgDiff <= allowedDiff && avgDiff < minScore) {
+        minScore = avgDiff;
+        bestMatch = g;
+      }
+    }
+
+    return (match: bestMatch, score: minScore);
+  }
+
+  // ---------------- Built-in KNN Presets ----------------
+  // สร้างท่ามาตรฐาน 3 ท่า ด้วยค่าองศาในอุดมคติ (Ideal Angles)
+  // อ้างอิงลำดับจาก pose_utils: [ศอกขวา, รักแร้ขวา, ศอกซ้าย, รักแร้ซ้าย, ไหล่ขวา, ไหล่ซ้าย]
+  static List<PoseGesture> getBuiltInPresets() {
+    return [
+      // 1. ท่ายกมือขวา (RAISE_RIGHT)
+      PoseGesture(
+        id: 'PRESET_RAISE_RIGHT',
+        name: 'Raise Right',
+        command: 'RAISE_RIGHT',
+        threshold: 0.35, // ยอมให้เพี้ยนได้บ้าง
+        keypoints: [],
+        isActive: true,
+        angles: [
+          170.0, // 1. ศอกขวา (เหยียดตรง)
+          160.0, // 2. รักแร้ขวา (ชูขึ้นฟ้า ~160-180)
+          170.0, // 3. ศอกซ้าย (เหยียดตรงแนบลำตัว)
+          20.0, // 4. รักแร้ซ้าย (หุบลงต่ำ)
+          90.0, // 5. ไหล่ขวา (ตั้งฉาก)
+          90.0, // 6. ไหล่ซ้าย (ตั้งฉาก)
+        ],
+      ),
+
+      // 2. ท่ายกมือซ้าย (RAISE_LEFT)
+      PoseGesture(
+        id: 'PRESET_RAISE_LEFT',
+        name: 'Raise Left',
+        command: 'RAISE_LEFT',
+        threshold: 0.35,
+        keypoints: [],
+        isActive: true,
+        angles: [
+          170.0, // 1. ศอกขวา (เหยียดตรงแนบลำตัว)
+          20.0, // 2. รักแร้ขวา (หุบลงต่ำ)
+          170.0, // 3. ศอกซ้าย (เหยียดตรง)
+          160.0, // 4. รักแร้ซ้าย (ชูขึ้นฟ้า)
+          90.0,
+          90.0,
+        ],
+      ),
+
+      // 3. ท่ายกสองมือ (RAISE_BOTH)
+      PoseGesture(
+        id: 'PRESET_RAISE_BOTH',
+        name: 'Raise Both Hands',
+        command: 'STOP',
+        threshold: 0.35,
+        keypoints: [],
+        isActive: true,
+        angles: [
+          170.0, // 1. ศอกขวา (เหยียดตรง)
+          160.0, // 2. รักแร้ขวา (ชูขึ้น)
+          170.0, // 3. ศอกซ้าย (เหยียดตรง)
+          160.0, // 4. รักแร้ซ้าย (ชูขึ้น)
+          90.0,
+          90.0,
+        ],
+      ),
+    ];
+  }
+
+  // ---------------- Cloud Logic (Firebase) ----------------
   static CollectionReference get _userGesturesRef {
     if (_user == null) throw Exception("User not logged in");
     return FirebaseFirestore.instance
@@ -143,7 +272,7 @@ class GestureStore {
     await _userGesturesRef.doc(id).delete();
   }
 
-  // ---------------- Local Logic ----------------
+  // ---------------- Local Logic (SharedPrefs) ----------------
   static Future<List<PoseGesture>> _loadFromLocal() async {
     final sp = await SharedPreferences.getInstance();
     final raw = sp.getString(_prefsKey);
@@ -179,34 +308,7 @@ class GestureStore {
         _prefsKey, jsonEncode(all.map((e) => e.toMap()).toList()));
   }
 
-  static PoseGesture fromPoseForStore(
-    Pose pose, {
-    required String name,
-    required String command,
-    int holdDuration = 1000,
-    double threshold = 0.25,
-    String? thumbnailPath,
-  }) {
-    final rawPoints = poseToOffsets(pose);
-    final normalized = normalizeByShoulder(rawPoints, pose.landmarks);
-    final calculatedAngles = PoseUtils.getPoseAngles(pose.landmarks);
-
-    return PoseGesture(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      command: command,
-      holdDuration: holdDuration,
-      threshold: threshold,
-      isActive: true,
-      keypoints: normalized,
-      angles: calculatedAngles,
-      thumbnailPath: thumbnailPath,
-    );
-  }
-
-  // ==========================================
-  // 👇 ส่วนนี้คือส่วนที่ "คงเดิม" (Preset Logic)
-  // ==========================================
+  // ---------------- Preset Helpers ----------------
 
   static Future<String> getPresetCommand(String key, String defaultCmd) async {
     final sp = await SharedPreferences.getInstance();
@@ -304,97 +406,9 @@ class GestureStore {
     map[key] = val;
     await sp.setString(_presetThrKey, jsonEncode(map));
   }
-
-  // ---------------- Matching Logic (Hybrid) ----------------
-  static ({PoseGesture? match, double score}) bestMatch(
-    List<Offset> currentRaw,
-    Map<PoseLandmarkType, PoseLandmark> currentLandmarks,
-    List<PoseGesture> db, {
-    // ❌ เอาค่า Default 0.4 ออกจากตรงนี้ เพราะเราจะคำนวณใหม่ข้างใน
-    double? overrideMaxDiff,
-  }) {
-    if (db.isEmpty) return (match: null, score: double.infinity);
-
-    final currentAngles = PoseUtils.getPoseAngles(currentLandmarks);
-
-    PoseGesture? bestAngleMatch;
-    double bestAngleScore = double.infinity;
-
-    // 1. ลองเทียบด้วย Angles (แม่นยำกว่า)
-    if (currentAngles.isNotEmpty) {
-      for (final g in db) {
-        if (!g.isActive || g.angles == null || g.angles!.isEmpty) continue;
-
-        if (PoseUtils.isMatch(g.angles!, currentAngles, g.threshold)) {
-          double totalErr = 0;
-          for (int i = 0; i < currentAngles.length; i++) {
-            totalErr += (currentAngles[i] - g.angles![i]).abs();
-          }
-          double score = totalErr / currentAngles.length;
-
-          if (score < bestAngleScore) {
-            bestAngleScore = score;
-            bestAngleMatch = g;
-          }
-        }
-      }
-    }
-
-    if (bestAngleMatch != null) {
-      return (match: bestAngleMatch, score: bestAngleScore);
-    }
-
-    // 2. ถ้าไม่เจอ เทียบด้วย Points (Backup)
-    final currentNorm = normalizeByShoulder(currentRaw, currentLandmarks);
-
-    PoseGesture? best;
-    double bestScore = double.infinity;
-    final upperBodyIndices = [11, 12, 13, 14, 15, 16, 23, 24];
-
-    for (final g in db) {
-      if (!g.isActive) continue;
-
-      double sumDist = 0;
-      int count = 0;
-      bool isReject = false;
-
-      // 🔥 FIX: คำนวณเพดานการคัดออก (MaxDiff) ตาม Threshold ของท่านั้นๆ
-      // สูตร: ยอมให้จุดเดียวเบี้ยวได้ไม่เกิน Threshold + 0.15 (เผื่อไว้นิดหน่อย)
-      // แต่ต้องไม่น้อยกว่า 0.4 (ค่ามาตรฐาน)
-      double dynamicMaxDiff = math.max(0.4, g.threshold + 0.15);
-
-      for (final i in upperBodyIndices) {
-        if (i < currentNorm.length && i < g.keypoints.length) {
-          final p1 = currentNorm[i];
-          final p2 = g.keypoints[i];
-          if (p1 == Offset.zero || p2 == Offset.zero) continue;
-          final dist = (p1 - p2).distance;
-
-          // 🔥 ใช้ dynamicMaxDiff แทน 0.4
-          if (dist > dynamicMaxDiff) {
-            isReject = true;
-            break;
-          }
-          sumDist += dist;
-          count++;
-        }
-      }
-
-      if (!isReject && count > 0) {
-        final avgDist = sumDist / count;
-        if (avgDist < g.threshold && avgDist < bestScore) {
-          bestScore = avgDist;
-          best = g;
-        }
-      }
-    }
-    return (match: best, score: bestScore);
-  }
 }
 
-// ==========================================
-// 👇 ส่วนนี้ก็ "คงเดิม" (Utilities)
-// ==========================================
+// ---------------- Helper Functions ----------------
 
 List<Offset> poseToOffsets(Pose pose) {
   final result = <Offset>[];

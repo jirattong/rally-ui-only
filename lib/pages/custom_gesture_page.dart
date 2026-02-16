@@ -120,6 +120,20 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
     }
   }
 
+  // 🔥 Helper: แปลงค่า Threshold เป็นคำพูด
+  String _getDifficultyLabel(double val) {
+    if (val <= 0.15) return "Easy (ผ่อนปรน)";
+    if (val <= 0.35) return "Normal (มาตรฐาน)";
+    return "Pro (เป๊ะเท่านั้น)";
+  }
+
+  // 🔥 Helper: แปลงค่า Threshold เป็นสี
+  Color _getDifficultyColor(double val) {
+    if (val <= 0.15) return Colors.green;
+    if (val <= 0.35) return Colors.blue;
+    return Colors.red;
+  }
+
   void _showEditDialog({
     required String title,
     required String currentCmd,
@@ -135,7 +149,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
     final cmdCtrl = TextEditingController(text: currentCmd);
     final nameCtrl = TextEditingController(text: currentName ?? '');
     double durVal = currentDur.toDouble();
-    double thrVal = currentThreshold ?? 0.4;
+    double thrVal = currentThreshold ?? 0.25;
 
     showDialog(
       context: context,
@@ -166,6 +180,8 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                     ),
                     const SizedBox(height: 20),
                     const Divider(),
+
+                    // --- Duration Slider ---
                     Text(
                         "Hold Duration: ${(durVal / 1000).toStringAsFixed(1)}s",
                         style: const TextStyle(
@@ -179,25 +195,47 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                       activeColor: Colors.deepOrange,
                       onChanged: (val) => setStateDialog(() => durVal = val),
                     ),
+
+                    // --- Accuracy Slider (New Design) ---
                     if (!isDynamic) ...[
                       const SizedBox(height: 10),
-                      Text("Strictness: ${((0.55 - thrVal) * 200).toInt()}%",
-                          style: const TextStyle(
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("Accuracy Level:",
+                              style: TextStyle(fontWeight: FontWeight.bold)),
+                          Text(
+                            _getDifficultyLabel(thrVal),
+                            style: TextStyle(
                               fontWeight: FontWeight.bold,
-                              color: Colors.blueAccent)),
+                              color: _getDifficultyColor(thrVal),
+                            ),
+                          ),
+                        ],
+                      ),
                       Slider(
                         value: thrVal,
-                        min: 0.1,
-                        max: 0.5,
-                        divisions: 20,
-                        activeColor: Colors.blueAccent,
+                        min: 0.1, // Easy (Low threshold = Loose match)
+                        max: 0.5, // Hard (High threshold = Strict match)
+                        divisions: 4, // 0.1, 0.2, 0.3, 0.4, 0.5
+                        activeColor: _getDifficultyColor(thrVal),
                         onChanged: (val) => setStateDialog(() => thrVal = val),
                       ),
-                      Text(
-                        allowNameEdit
-                            ? "Lower % = Loose Match (Easier)\nHigher % = Strict Match (Harder)"
-                            : "Lower % = Low Height (Shoulder)\nHigher % = High Height (Eye/Head)",
-                        style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          thrVal <= 0.15
+                              ? "✨ Beginner Friendly: ยอมให้ท่าเพี้ยนได้เยอะ เหมาะสำหรับผู้เริ่มต้น"
+                              : thrVal >= 0.4
+                                  ? "🔥 Expert Mode: ท่าต้องถูกต้องเป๊ะๆ เท่านั้นถึงจะติด"
+                                  : "⚖️ Balanced: ระดับสมดุล เหมาะกับการฝึกซ้อมทั่วไป",
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.grey[700]),
+                        ),
                       ),
                     ],
                   ],
@@ -392,10 +430,10 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
 
           const SizedBox(height: 16),
 
-          // ---------------- STATIC PRESETS ----------------
+          // ---------------- STATIC PRESETS (KNN) ----------------
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
-            child: Text("Hold Presets (Static)",
+            child: Text("Hold Presets (Static - KNN)",
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -469,10 +507,10 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
 
           const SizedBox(height: 24),
 
-          // ---------------- CUSTOM GESTURES ----------------
+          // ---------------- CUSTOM GESTURES (KNN) ----------------
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
-            child: Text("My Custom Gestures",
+            child: Text("My Custom Gestures (KNN)",
                 style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -537,11 +575,11 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                 allowNameEdit: true,
                 isDynamic: false,
                 onSave: (newCmd, newName, newDur, newThr) async {
-                  // 1. Preserve Keypoints (List<Offset>)
+                  // 1. Preserve Keypoints
                   final List<Offset> preservedKeypoints =
                       List<Offset>.from(g.keypoints);
 
-                  // 2. Preserve Angles (List<double>) - 🔥 KEY FIX HERE (with ?? [])
+                  // 2. Preserve Angles
                   final List<double> preservedAngles =
                       List<double>.from(g.angles ?? []);
 
@@ -552,7 +590,7 @@ class _CustomGesturePageState extends State<CustomGesturePage> {
                     holdDuration: newDur,
                     threshold: newThr,
                     keypoints: preservedKeypoints,
-                    angles: preservedAngles, // ✅ ส่งค่ามุมที่ก๊อปปี้มา
+                    angles: preservedAngles,
                     thumbnailPath: g.thumbnailPath,
                     timestamp: g.timestamp,
                     isActive: g.isActive,
@@ -639,6 +677,19 @@ class _CustomGestureTile extends StatelessWidget {
       required this.onEdit,
       required this.onToggle});
 
+  // Helper สำหรับแปลงค่า Threshold เป็น Label สั้นๆ ใน Card
+  String _getShortLabel(double val) {
+    if (val <= 0.15) return "Easy";
+    if (val <= 0.35) return "Normal";
+    return "Pro";
+  }
+
+  Color _getShortColor(double val) {
+    if (val <= 0.15) return Colors.green;
+    if (val <= 0.35) return Colors.blue;
+    return Colors.red;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -673,9 +724,20 @@ class _CustomGestureTile extends StatelessWidget {
                               color: Colors.orange[800], fontSize: 12)),
                     ],
                   ),
-                  Text(
-                      "Strictness: ${((0.55 - item.threshold) * 200).toInt()}%",
-                      style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                  Row(
+                    children: [
+                      const Text("Accuracy: ",
+                          style: TextStyle(fontSize: 10, color: Colors.grey)),
+                      Text(
+                        _getShortLabel(item.threshold),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: _getShortColor(item.threshold),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               )
             : const Text("Disabled", style: TextStyle(color: Colors.grey)),

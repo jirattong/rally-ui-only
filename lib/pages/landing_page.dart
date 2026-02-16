@@ -68,7 +68,7 @@ class LandingPage extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                 ),
-                child: const Text('Quick Start (Demo)',
+                child: const Text('Quick Start',
                     style:
                         TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               ),

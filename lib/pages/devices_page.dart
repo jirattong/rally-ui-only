@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -28,7 +29,7 @@ class _DevicesPageState extends State<DevicesPage> {
     });
   }
 
-  // บันทึกค่าลงเครื่อง
+  // ✅ บันทึกค่าและทดสอบการเชื่อมต่อกับ Server
   Future<void> _saveSettings() async {
     if (_ipController.text.isEmpty || _portController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -39,22 +40,46 @@ class _DevicesPageState extends State<DevicesPage> {
 
     setState(() => _isLoading = true);
 
-    // จำลองการบันทึก (Delay นิดหน่อยให้ดูเหมือนทำงาน)
-    await Future.delayed(const Duration(milliseconds: 500));
+    final ip = _ipController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 5000;
 
+    // 1. บันทึกค่าลง SharedPreferences (ในเครื่อง)
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('target_ip', _ipController.text);
-    await prefs.setString('target_port', _portController.text);
+    await prefs.setString('target_ip', ip);
+    await prefs.setString('target_port', port.toString());
 
-    setState(() => _isLoading = false);
+    // 2. 🔥 ทดสอบเชื่อมต่อและส่งข้อความแจ้ง Server ทันที 🔥
+    try {
+      // พยายามเชื่อมต่อ (Timeout 2 วินาที)
+      Socket socket =
+          await Socket.connect(ip, port, timeout: const Duration(seconds: 2));
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Connection settings saved!'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      // ส่งคำทักทายเพื่อให้หน้าจอ Server ของอาจารย์ขึ้นข้อความ
+      socket.write("DEVICE_CONNECTED");
+
+      await socket.flush();
+      await socket.close();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Settings saved & Connected to Server!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      // หากเชื่อมต่อไม่ได้ (Server ไม่ได้เปิด หรือ IP ผิด)
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Saved, but cannot reach Server: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -86,7 +111,6 @@ class _DevicesPageState extends State<DevicesPage> {
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            // Icon
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
@@ -100,8 +124,6 @@ class _DevicesPageState extends State<DevicesPage> {
               ),
             ),
             const SizedBox(height: 32),
-
-            // Instruction Text
             const Text(
               "Enter Computer Network Info",
               style: TextStyle(
@@ -120,8 +142,6 @@ class _DevicesPageState extends State<DevicesPage> {
               ),
             ),
             const SizedBox(height: 32),
-
-            // IP Field
             _buildTextField(
               controller: _ipController,
               label: "Computer IP Address",
@@ -129,8 +149,6 @@ class _DevicesPageState extends State<DevicesPage> {
               icon: Icons.wifi,
             ),
             const SizedBox(height: 16),
-
-            // Port Field
             _buildTextField(
               controller: _portController,
               label: "Port Number",
@@ -138,8 +156,6 @@ class _DevicesPageState extends State<DevicesPage> {
               icon: Icons.numbers,
             ),
             const SizedBox(height: 40),
-
-            // Save Button
             SizedBox(
               width: double.infinity,
               height: 54,
@@ -162,7 +178,7 @@ class _DevicesPageState extends State<DevicesPage> {
                         ),
                       )
                     : const Text(
-                        "SAVE CONNECTION",
+                        "SAVE & TEST CONNECTION",
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
@@ -210,7 +226,8 @@ class _DevicesPageState extends State<DevicesPage> {
           ),
           child: TextField(
             controller: controller,
-            keyboardType: TextInputType.number,
+            keyboardType:
+                TextInputType.text, // เปลี่ยนเป็น text เพื่อรองรับ IP format
             style: const TextStyle(fontWeight: FontWeight.w600),
             decoration: InputDecoration(
               hintText: hint,

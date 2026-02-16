@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -6,7 +7,6 @@ import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/pose_service.dart';
@@ -35,7 +35,8 @@ class _StartCamPageState extends State<StartCamPage> {
   DateTime _lastShown = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _bannerTimer;
 
-  List<PoseGesture> _customGestures = [];
+  // รวมท่าทั้งหมดไว้ใช้กับ KNN
+  List<PoseGesture> _allGestures = [];
 
   final Map<String, String> _presetCmds = {};
   final Map<String, int> _presetDurs = {};
@@ -47,9 +48,12 @@ class _StartCamPageState extends State<StartCamPage> {
   int _camIndex = 0;
   bool _isBusy = false;
 
-  String _debugInfo = "Stand in frame...";
-  Color _debugColor = Colors.white;
+  // UI Status
+  String _statusMessage = "Stand in frame...";
+  String _statusSubtext = "";
+  Color _statusColor = Colors.white;
 
+  // Swipe Variables
   SwipeState _swipeState = SwipeState.idle;
   ActiveHand _swipeHand = ActiveHand.none;
   DateTime _lastStateTime = DateTime.now();
@@ -62,14 +66,9 @@ class _StartCamPageState extends State<StartCamPage> {
   final Map<String, int> _startAt = {};
   final Map<String, int> _cooldownUntil = {};
 
-  // --------------------------------------------------------
-  // 🟢 SMOOTHING SYSTEM VARIABLES
-  // --------------------------------------------------------
-  // เก็บประวัติตำแหน่ง 8 เฟรมย้อนหลังเพื่อหาค่าเฉลี่ย
+  // Smoothing
   final List<Map<PoseLandmarkType, Offset>> _poseHistory = [];
-  static const int _smoothWindow = 8; // ยิ่งเยอะยิ่งนิ่ง (แนะนำ 6-10)
-
-  // เก็บค่าตำแหน่งที่ Smooth แล้วของเฟรมที่ผ่านมา (เอาไว้เทียบหาความนิ่ง)
+  static const int _smoothWindow = 8;
   Map<PoseLandmarkType, Offset> _lastSmoothedPositions = {};
 
   bool _isStable = false;
@@ -81,7 +80,6 @@ class _StartCamPageState extends State<StartCamPage> {
   String _targetIp = "192.168.1.50";
   String _targetPort = "5000";
 
-  // ✅ Database Reference
   final DatabaseReference _rtdbRef = FirebaseDatabase.instance.ref();
 
   @override
@@ -90,7 +88,7 @@ class _StartCamPageState extends State<StartCamPage> {
     _matchedName = null;
     _initAll();
     _loadData();
-    _loadConnectionSettings(); // ✅ โหลด IP ที่บันทึกไว้
+    _loadConnectionSettings();
   }
 
   Future<void> _loadConnectionSettings() async {
@@ -99,12 +97,9 @@ class _StartCamPageState extends State<StartCamPage> {
       _targetIp = prefs.getString('target_ip') ?? "192.168.1.50";
       _targetPort = prefs.getString('target_port') ?? "5000";
     });
-    print("📡 Loaded Connection: $_targetIp:$_targetPort");
   }
 
   Future<void> _loadData() async {
-    _customGestures = await GestureStore.loadAll();
-
     final keys = [
       'SWIPE_RIGHT',
       'SWIPE_LEFT',
@@ -114,33 +109,61 @@ class _StartCamPageState extends State<StartCamPage> {
       'RAISE_LEFT',
       'RAISE_BOTH'
     ];
+    // โหลดค่า Settings ของแต่ละท่า (Command, Duration, Active, Threshold)
     for (var k in keys) {
-      _presetCmds[k] =
-          await GestureStore.getPresetCommand(k, _getDefaultCmd(k));
+      _presetCmds[k] = await GestureStore.getPresetCommand(k, k);
       _presetDurs[k] = await GestureStore.getPresetDuration(k, 1000);
       _presetActive[k] = await GestureStore.getPresetActive(k, true);
       _presetThresholds[k] = await GestureStore.getPresetThreshold(k, 0.25);
     }
-  }
 
-  String _getDefaultCmd(String key) {
-    switch (key) {
-      case 'SWIPE_RIGHT':
-        return 'SWIPE_RIGHT';
-      case 'SWIPE_LEFT':
-        return 'SWIPE_LEFT';
-      case 'L_SWIPE_LEFT':
-        return 'L_SWIPE_LEFT';
-      case 'L_SWIPE_RIGHT':
-        return 'L_SWIPE_RIGHT';
-      case 'RAISE_RIGHT':
-        return 'RAISE_RIGHT';
-      case 'RAISE_LEFT':
-        return 'RAISE_LEFT';
-      case 'RAISE_BOTH':
-        return 'STOP';
-      default:
-        return key;
+    // โหลดท่า Custom และ Preset
+    final customList = await GestureStore.loadAll();
+    final presetList = GestureStore.getBuiltInPresets();
+
+    final updatedPresets = <PoseGesture>[];
+    for (var p in presetList) {
+      String realCmd = p.command;
+      bool isActive = true;
+      int dur = 1000;
+      double thr = p.threshold;
+
+      // Map ค่าจาก Settings มาใส่ Preset ให้ KNN รู้จัก
+      if (p.id == 'PRESET_RAISE_BOTH') {
+        realCmd = _presetCmds['RAISE_BOTH'] ?? 'STOP';
+        isActive = _presetActive['RAISE_BOTH'] ?? true;
+        dur = _presetDurs['RAISE_BOTH'] ?? 1000;
+        thr = _presetThresholds['RAISE_BOTH'] ?? 0.35;
+      }
+      if (p.id == 'PRESET_RAISE_RIGHT') {
+        realCmd = _presetCmds['RAISE_RIGHT'] ?? 'RAISE_RIGHT';
+        isActive = _presetActive['RAISE_RIGHT'] ?? true;
+        dur = _presetDurs['RAISE_RIGHT'] ?? 1000;
+        thr = _presetThresholds['RAISE_RIGHT'] ?? 0.35;
+      }
+      if (p.id == 'PRESET_RAISE_LEFT') {
+        realCmd = _presetCmds['RAISE_LEFT'] ?? 'RAISE_LEFT';
+        isActive = _presetActive['RAISE_LEFT'] ?? true;
+        dur = _presetDurs['RAISE_LEFT'] ?? 1000;
+        thr = _presetThresholds['RAISE_LEFT'] ?? 0.35;
+      }
+
+      updatedPresets.add(PoseGesture(
+        id: p.id,
+        name: p.name,
+        command: realCmd,
+        holdDuration: dur,
+        isActive: isActive,
+        threshold: thr, // ✅ ใช้ Threshold จาก Slider ที่โหลดมา
+        keypoints: p.keypoints,
+        angles: p.angles,
+      ));
+    }
+
+    if (mounted) {
+      setState(() {
+        _allGestures = [...customList, ...updatedPresets];
+      });
     }
   }
 
@@ -149,34 +172,29 @@ class _StartCamPageState extends State<StartCamPage> {
     try {
       _cams = await availableCameras();
     } catch (e) {
-      if (mounted) {
+      if (mounted)
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
       return;
     }
     final backIdx =
         _cams.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
     _camIndex = backIdx >= 0 ? backIdx : 0;
     await _openCamera();
-    if (!mounted) return;
-    setState(() => _ready = true);
+    if (mounted) setState(() => _ready = true);
   }
 
   Future<void> _openCamera() async {
     await _cam?.dispose();
     await _poseService?.dispose();
-
     if (_cams.isEmpty) return;
 
-    final camDesc = _cams[_camIndex];
     _cam = CameraController(
-      camDesc,
-      ResolutionPreset.low,
+      _cams[_camIndex],
+      ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
-
     try {
       await _cam!.initialize();
     } catch (e) {
@@ -188,7 +206,6 @@ class _StartCamPageState extends State<StartCamPage> {
       model: PoseDetectionModel.base,
       mode: PoseDetectionMode.stream,
     );
-
     _streaming = false;
     _isBusy = false;
   }
@@ -200,18 +217,17 @@ class _StartCamPageState extends State<StartCamPage> {
 
   Future<void> _toggleStream() async {
     if (_cam == null) return;
-
     if (_streaming) {
       setState(() => _streaming = false);
       await _cam!.stopImageStream();
       await _saveSessionData();
-
       if (mounted) {
         setState(() {
           _poses = [];
           _matchedName = null;
           _isBusy = false;
-          _debugInfo = "Stopped";
+          _statusMessage = "Stopped";
+          _statusSubtext = "";
           _swipeState = SwipeState.idle;
           _swipeHand = ActiveHand.none;
         });
@@ -220,53 +236,39 @@ class _StartCamPageState extends State<StartCamPage> {
     }
 
     try {
-      // ✅ โหลด Setting ล่าสุดทุกครั้งที่กด Start (กันลืม)
       await _loadConnectionSettings();
+      await _loadData();
 
       setState(() => _streaming = true);
       _sessionStartTime = DateTime.now();
       _commandCount = 0;
-
-      _poseHistory.clear(); // ล้างประวัติ Smoothing
+      _poseHistory.clear();
       _lastSmoothedPositions.clear();
 
       final rotation = _rotationFor(_cam!.description);
       await _cam!.startImageStream((image) async {
         if (_isBusy) return;
         _isBusy = true;
-
         try {
           final ps =
               await _poseService!.processCameraImage(image, rotation: rotation);
-
           if (!mounted || !_streaming) {
             _isBusy = false;
             return;
           }
-
           if (mounted) {
             _poses = ps;
             if (ps.isNotEmpty) {
               final pose = ps.first;
-
-              // ✅ ใช้ Logic ใหม่: Smoothing + Upper Body Check
               _checkStability(pose);
-
-              if (_isStable) {
-                _evaluateHoldGestures(pose);
-              } else {
-                _startAt.clear();
-                if (_swipeState == SwipeState.idle) {
-                  _debugInfo = "Move: Too fast";
-                  _debugColor = Colors.grey;
-                }
-              }
-
+              // ✅ เรียกใช้ KNN Logic (ที่ลบ Hardcoded แล้ว)
+              _evaluateHoldGestures(pose);
               _checkForSwipe(pose);
             } else {
-              _debugInfo = "No Person";
-              _debugColor = Colors.red;
-              _poseHistory.clear(); // ถ้าคนหาย ให้ล้างประวัติ
+              _statusMessage = "No Person";
+              _statusSubtext = "";
+              _statusColor = Colors.red;
+              _poseHistory.clear();
             }
             setState(() {});
           }
@@ -281,24 +283,16 @@ class _StartCamPageState extends State<StartCamPage> {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // 🟢 SMOOTHING HELPER FUNCTION
-  // -----------------------------------------------------------------------
   Map<PoseLandmarkType, Offset> _getSmoothedLandmarks(
       Map<PoseLandmarkType, Offset> current) {
     _poseHistory.add(current);
     if (_poseHistory.length > _smoothWindow) {
-      _poseHistory.removeAt(0); // เอาเฟรมเก่าสุดออก
+      _poseHistory.removeAt(0);
     }
-
     Map<PoseLandmarkType, Offset> smoothed = {};
-
-    // วนลูปหาค่าเฉลี่ยทุกจุดที่มีในเฟรมปัจจุบัน
     for (var type in current.keys) {
-      double sumX = 0;
-      double sumY = 0;
+      double sumX = 0, sumY = 0;
       int count = 0;
-
       for (var frame in _poseHistory) {
         if (frame.containsKey(type)) {
           sumX += frame[type]!.dx;
@@ -306,20 +300,13 @@ class _StartCamPageState extends State<StartCamPage> {
           count++;
         }
       }
-
-      if (count > 0) {
-        smoothed[type] = Offset(sumX / count, sumY / count);
-      }
+      if (count > 0) smoothed[type] = Offset(sumX / count, sumY / count);
     }
     return smoothed;
   }
 
-  // -----------------------------------------------------------------------
-  // 🟢 UPDATED: Check Stability with SMOOTHING & Higher Threshold
-  // -----------------------------------------------------------------------
   void _checkStability(Pose pose) {
     final List<PoseLandmarkType> targetLandmarks = [
-      PoseLandmarkType.nose,
       PoseLandmarkType.leftShoulder,
       PoseLandmarkType.rightShoulder,
       PoseLandmarkType.leftElbow,
@@ -327,193 +314,229 @@ class _StartCamPageState extends State<StartCamPage> {
       PoseLandmarkType.leftWrist,
       PoseLandmarkType.rightWrist,
     ];
-
-    // 1. ดึงค่าดิบ (Raw Data)
     Map<PoseLandmarkType, Offset> rawPositions = {};
     for (var type in targetLandmarks) {
       final lm = pose.landmarks[type];
-      if (lm != null) {
-        rawPositions[type] = Offset(lm.x, lm.y);
-      }
+      if (lm != null) rawPositions[type] = Offset(lm.x, lm.y);
     }
-
-    // 2. แปลงเป็นค่าที่นิ่งแล้ว (Smoothed Data) ✅
     Map<PoseLandmarkType, Offset> currentSmoothed =
         _getSmoothedLandmarks(rawPositions);
-
     if (_lastSmoothedPositions.isEmpty) {
       _lastSmoothedPositions = currentSmoothed;
       return;
     }
-
-    // 3. คำนวณความนิ่ง (เทียบค่า Smooth ปัจจุบัน กับ Smooth อดีต)
     double totalDist = 0;
     int count = 0;
-
     for (var type in targetLandmarks) {
       if (currentSmoothed.containsKey(type) &&
           _lastSmoothedPositions.containsKey(type)) {
-        final p1 = currentSmoothed[type]!;
-        final p2 = _lastSmoothedPositions[type]!;
-
-        totalDist += (p1 - p2).distance;
+        totalDist +=
+            (currentSmoothed[type]! - _lastSmoothedPositions[type]!).distance;
         count++;
       }
     }
-
     double avgDist = count > 0 ? totalDist / count : 0.0;
     _movementScore = avgDist;
-
-    // 4. ปรับ Threshold ให้ใจดีขึ้น (จาก 2.0 เป็น 4.0) ✅
-    // ช่วยให้ผ่านง่ายขึ้นแม้กล้องมี Noise
-    _isStable = avgDist < 4.0;
-
+    _isStable = avgDist < 5.0;
     _lastSmoothedPositions = currentSmoothed;
+  }
+
+  // ----------------------------------------------------------------------
+  // 🔥 [PURE KNN] Logic: ใช้เฉพาะ KNN เท่านั้น ไม่มี Hardcoded ปน
+  // ----------------------------------------------------------------------
+  void _evaluateHoldGestures(Pose pose) {
+    if (DateTime.now().difference(_lastSwipeTime).inMilliseconds < 2000) return;
+    if (_swipeState != SwipeState.idle) return;
+
+    final rawPoints = poseToOffsets(pose);
+    final currentLandmarks = pose.landmarks;
+
+    // 1. เรียก KNN Matching (ใช้ Threshold จากที่โหลดมา)
+    final matchResult =
+        GestureStore.bestMatch(rawPoints, currentLandmarks, _allGestures);
+
+    // 2. ถ้าเจอท่า (Error ต่ำกว่า Threshold)
+    if (matchResult.match != null) {
+      final g = matchResult.match!;
+
+      // เช็ค Disable (Active Status)
+      bool isActive = true;
+      if (g.id.startsWith('PRESET_')) {
+        String key = g.id.replaceFirst('PRESET_', '');
+        isActive = _presetActive[key] ?? true;
+      }
+
+      // ถ้าปิดท่านี้อยู่ ให้ข้ามไปเลย (ไม่ทำอะไรต่อ)
+      if (!isActive) {
+        _startAt.remove("CUSTOM_${g.id}");
+        _startAt.remove(g.id);
+        // เคลียร์สถานะเป็นว่าง
+        _statusMessage = "Scanning...";
+        _statusSubtext = "Active: False";
+        _statusColor = Colors.grey;
+        return;
+      }
+
+      // ถ้าเปิดอยู่ -> แสดงชื่อท่า
+      _statusMessage = g.name;
+      _statusColor = Colors.greenAccent;
+      _statusSubtext = _isStable
+          ? "Holding... (Error: ${matchResult.score.toStringAsFixed(1)})"
+          : "Stabilizing... (Move: ${_movementScore.toStringAsFixed(1)})";
+
+      if (_isStable) {
+        // 🔥 ส่ง g.command ไปโชว์ใน Pop-up
+        _checkHold(g.id, true, g.command, g.holdDuration, g.command);
+      } else {
+        _startAt.remove("CUSTOM_${g.id}");
+        _startAt.remove(g.id);
+      }
+      return;
+    }
+
+    // 3. ถ้าไม่เจอท่าอะไรเลย (No Match)
+    _statusMessage = _isStable ? "Scanning..." : "Moving...";
+    _statusSubtext =
+        _isStable ? "Ready" : "Score: ${_movementScore.toStringAsFixed(1)}";
+    _statusColor = _isStable ? Colors.white : Colors.grey;
+    _startAt.clear();
+  }
+
+  void _checkHold(String uniqueId, bool isDetected, String cmdToSend,
+      int duration, String bannerText) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if ((_cooldownUntil[uniqueId] ?? 0) > nowMs) {
+      _startAt.remove(uniqueId);
+      return;
+    }
+    if (isDetected) {
+      if (!_startAt.containsKey(uniqueId)) {
+        _startAt[uniqueId] = nowMs;
+      } else if (nowMs - _startAt[uniqueId]! >= duration) {
+        // ✅ ส่ง command เป็น bannerText ไปแสดงผล
+        _executeCommand(cmdToSend, displayText: bannerText);
+        _cooldownUntil[uniqueId] = nowMs + cooldownMs;
+        _startAt.remove(uniqueId);
+      }
+    } else {
+      _startAt.remove(uniqueId);
+    }
   }
 
   void _showBanner(String text) {
     final now = DateTime.now();
     if (now.difference(_lastShown).inMilliseconds > 1000) {
-      setState(() {
-        _matchedName = text;
-      });
+      setState(() => _matchedName = text);
       _lastShown = now;
       _bannerTimer?.cancel();
       _bannerTimer = Timer(const Duration(seconds: 2), () {
-        if (mounted)
-          setState(() {
-            _matchedName = null;
-          });
+        if (mounted) setState(() => _matchedName = null);
       });
     }
   }
 
-  //  ฟังก์ชันส่งคำสั่ง
-  Future<void> _executeCommand(String command) async {
+  Future<void> _executeCommand(String command, {String? displayText}) async {
     _commandCount++;
-    _showBanner(command);
+    _showBanner(displayText ?? command); // โชว์ Command สีเขียวกลางจอ
+    print(
+        "🚀 Command: $command (Show: ${displayText ?? command}) -> $_targetIp:$_targetPort");
 
-    print("🚀 Sending Command: $command to $_targetIp:$_targetPort");
-
-    // 1. ส่ง HTTP (IoT Direct)
-    final url = Uri.parse('http://$_targetIp:$_targetPort/turtle/$command');
     try {
-      http.get(url).timeout(const Duration(milliseconds: 500)).catchError((e) {
-        print("❌ HTTP Error: $e");
-        return http.Response('Error', 500);
-      });
-    } catch (_) {}
-
-    // 2. ส่ง Firebase Realtime Database
+      int port = int.tryParse(_targetPort) ?? 5000;
+      Socket socket = await Socket.connect(_targetIp, port,
+          timeout: const Duration(seconds: 1));
+      socket.write(command);
+      await socket.flush();
+      await socket.close();
+      print("✅ Sent TCP: $command");
+    } catch (e) {
+      print("❌ Socket Error: $e");
+    }
     try {
       await _rtdbRef.child('iot_device').update({
         'command': command,
         'last_updated': DateTime.now().toIso8601String(),
       });
-      print("✅ Firebase RTDB Updated!");
-    } catch (e) {
-      print("❌ Firebase RTDB Error: $e");
-    }
+    } catch (e) {}
   }
 
   void _checkForSwipe(Pose pose) {
     final lm = pose.landmarks;
-    final rWrist = lm[PoseLandmarkType.rightWrist];
-    final rShoulder = lm[PoseLandmarkType.rightShoulder];
-    final lWrist = lm[PoseLandmarkType.leftWrist];
-    final lShoulder = lm[PoseLandmarkType.leftShoulder];
+    final rWrist = lm[PoseLandmarkType.rightWrist],
+        rShoulder = lm[PoseLandmarkType.rightShoulder];
+    final lWrist = lm[PoseLandmarkType.leftWrist],
+        lShoulder = lm[PoseLandmarkType.leftShoulder];
 
     if (rWrist == null ||
         rShoulder == null ||
         lWrist == null ||
         lShoulder == null) return;
-
     double shoulderWidth = (lShoulder.x - rShoulder.x).abs();
     if (shoulderWidth < 10) return;
 
     double rRatio = (rWrist.x - rShoulder.x) / shoulderWidth;
     double lRatio = (lWrist.x - lShoulder.x) / shoulderWidth;
-
     double verticalLimit = shoulderWidth * 0.8;
     bool rVerticalOK = (rWrist.y - rShoulder.y).abs() < verticalLimit;
     bool lVerticalOK = (lWrist.y - lShoulder.y).abs() < verticalLimit;
 
-    // Mirror Fix
-    bool r_AtChest = rRatio > 0.3 && rVerticalOK;
-    bool r_AtSide = rRatio < -0.8 && rVerticalOK;
-    bool l_AtChest = lRatio < -0.3 && lVerticalOK;
-    bool l_AtSide = lRatio > 0.8 && lVerticalOK;
+    bool r_AtChest = rRatio > 0.3 && rVerticalOK,
+        r_AtSide = rRatio < -0.8 && rVerticalOK;
+    bool l_AtChest = lRatio < -0.3 && lVerticalOK,
+        l_AtSide = lRatio > 0.8 && lVerticalOK;
 
     final now = DateTime.now();
-    int timeoutLimit = 1500;
-
     if (_swipeState != SwipeState.idle &&
-        now.difference(_lastStateTime).inMilliseconds > timeoutLimit) {
+        now.difference(_lastStateTime).inMilliseconds > 1500) {
       _swipeState = SwipeState.idle;
       _swipeHand = ActiveHand.none;
-      _debugInfo = "Swipe Reset (Too slow)";
     }
 
     switch (_swipeState) {
       case SwipeState.idle:
-        bool isReadyRightOut =
-            (_presetActive['SWIPE_RIGHT'] ?? true) && r_AtChest;
-        bool isReadyRightIn = (_presetActive['SWIPE_LEFT'] ?? true) && r_AtSide;
-        bool isReadyLeftOut =
-            (_presetActive['L_SWIPE_LEFT'] ?? true) && l_AtChest;
-        bool isReadyLeftIn =
-            (_presetActive['L_SWIPE_RIGHT'] ?? true) && l_AtSide;
+        // ✅ เช็ค Disable ของท่าปัด
+        bool canSwipeRight =
+            r_AtChest && (_presetActive['SWIPE_RIGHT'] ?? true);
+        bool canSwipeLeft = r_AtSide && (_presetActive['SWIPE_LEFT'] ?? true);
+        bool canLSwipeLeft =
+            l_AtChest && (_presetActive['L_SWIPE_LEFT'] ?? true);
+        bool canLSwipeRight =
+            l_AtSide && (_presetActive['L_SWIPE_RIGHT'] ?? true);
 
-        if (isReadyRightOut ||
-            isReadyRightIn ||
-            isReadyLeftOut ||
-            isReadyLeftIn) {
-          if (_readyHoldStart == null) {
+        if (canSwipeRight || canSwipeLeft || canLSwipeLeft || canLSwipeRight) {
+          if (_readyHoldStart == null)
             _readyHoldStart = now;
-          } else if (now.difference(_readyHoldStart!).inMilliseconds > 200) {
-            if (isReadyRightOut)
+          else if (now.difference(_readyHoldStart!).inMilliseconds > 200) {
+            if (canSwipeRight)
               _startSwipe(ActiveHand.right, "OUT", "Right Ready (>>)");
-            else if (isReadyRightIn)
+            else if (canSwipeLeft)
               _startSwipe(ActiveHand.right, "IN", "Right Ready (<<)");
-            else if (isReadyLeftOut)
+            else if (canLSwipeLeft)
               _startSwipe(ActiveHand.left, "OUT", "Left Ready (<<)");
-            else if (isReadyLeftIn)
+            else if (canLSwipeRight)
               _startSwipe(ActiveHand.left, "IN", "Left Ready (>>)");
-
             _readyHoldStart = null;
           }
-        } else {
+        } else
           _readyHoldStart = null;
-        }
         break;
-
       case SwipeState.phase1:
-        if (_swipeHand == ActiveHand.right) {
-          if (rRatio > -0.5 && rRatio < 0.5) {
-            _swipeState = SwipeState.phase2;
-            _lastStateTime = now;
-          }
-        } else if (_swipeHand == ActiveHand.left) {
-          if (lRatio > -0.5 && lRatio < 0.5) {
-            _swipeState = SwipeState.phase2;
-            _lastStateTime = now;
-          }
+        if ((_swipeHand == ActiveHand.right && rRatio > -0.5 && rRatio < 0.5) ||
+            (_swipeHand == ActiveHand.left && lRatio > -0.5 && lRatio < 0.5)) {
+          _swipeState = SwipeState.phase2;
+          _lastStateTime = now;
         }
         break;
-
       case SwipeState.phase2:
         if (_swipeHand == ActiveHand.right) {
-          if (_swipeDirection == "OUT" && r_AtSide) {
+          if (_swipeDirection == "OUT" && r_AtSide)
             _trigger("SWIPE_RIGHT");
-          } else if (_swipeDirection == "IN" && r_AtChest) {
-            _trigger("SWIPE_LEFT");
-          }
+          else if (_swipeDirection == "IN" && r_AtChest) _trigger("SWIPE_LEFT");
         } else if (_swipeHand == ActiveHand.left) {
-          if (_swipeDirection == "OUT" && l_AtSide) {
+          if (_swipeDirection == "OUT" && l_AtSide)
             _trigger("L_SWIPE_LEFT");
-          } else if (_swipeDirection == "IN" && l_AtChest) {
+          else if (_swipeDirection == "IN" && l_AtChest)
             _trigger("L_SWIPE_RIGHT");
-          }
         }
         break;
     }
@@ -524,201 +547,55 @@ class _StartCamPageState extends State<StartCamPage> {
     _swipeHand = hand;
     _swipeDirection = dir;
     _lastStateTime = DateTime.now();
-    _debugInfo = debugText;
-    _debugColor = Colors.orange;
+    _statusMessage = debugText;
+    _statusSubtext = "Swipe in progress...";
+    _statusColor = Colors.orangeAccent;
   }
 
   void _trigger(String key) {
+    // ส่ง Command ไปโชว์
     final cmd = _presetCmds[key] ?? key;
-    _executeCommand(cmd); // ✅ เรียกใช้ฟังก์ชันกลาง
-
+    _executeCommand(cmd, displayText: cmd);
     _lastSwipeTime = DateTime.now();
     _swipeState = SwipeState.idle;
     _swipeHand = ActiveHand.none;
   }
 
-  void _evaluateHoldGestures(Pose pose) {
-    if (DateTime.now().difference(_lastSwipeTime).inMilliseconds < 2000) {
-      return;
-    }
-
-    if (_swipeState != SwipeState.idle) return;
-
-    final currentAngles = PoseUtils.getPoseAngles(pose.landmarks);
-    if (currentAngles.isEmpty) return;
-
-    final rawPoints = poseToOffsets(pose);
-
-    final matchResult = GestureStore.bestMatch(
-      rawPoints,
-      pose.landmarks,
-      _customGestures,
-    );
-
-    if (matchResult.match != null) {
-      final g = matchResult.match!;
-      _checkHold("CUSTOM_${g.id}", true, g.command, g.holdDuration, g.command);
-
-      if (_swipeState == SwipeState.idle) {
-        _debugInfo = "Hold: ${g.name}";
-        _debugColor = Colors.purpleAccent;
-      }
-      return;
-    }
-
-    final lm = pose.landmarks;
-    if (!lm.containsKey(PoseLandmarkType.leftWrist) ||
-        !lm.containsKey(PoseLandmarkType.rightWrist) ||
-        !lm.containsKey(PoseLandmarkType.nose) ||
-        !lm.containsKey(PoseLandmarkType.leftShoulder)) return;
-
-    final rightWrist = lm[PoseLandmarkType.rightWrist]!;
-    final leftWrist = lm[PoseLandmarkType.leftWrist]!;
-    final nose = lm[PoseLandmarkType.nose]!;
-    final shoulder = lm[PoseLandmarkType.rightShoulder]!;
-
-    bool checkHeight(PoseLandmark wrist, String key) {
-      double thr = _presetThresholds[key] ?? 0.25;
-      double targetY = nose.y;
-
-      if (thr <= 0.2) {
-        if (lm.containsKey(PoseLandmarkType.rightEye)) {
-          targetY = lm[PoseLandmarkType.rightEye]!.y;
-        } else {
-          targetY = nose.y - 40;
-        }
-      } else if (thr >= 0.4) {
-        targetY = shoulder.y - 20;
-      } else {
-        targetY = nose.y;
-      }
-      return wrist.y < targetY;
-    }
-
-    bool isRightHigh = checkHeight(rightWrist, 'RAISE_RIGHT');
-    bool isLeftHigh = checkHeight(leftWrist, 'RAISE_LEFT');
-    bool isRightBoth = checkHeight(rightWrist, 'RAISE_BOTH');
-    bool isLeftBoth = checkHeight(leftWrist, 'RAISE_BOTH');
-
-    bool raiseBoth = isRightBoth && isLeftBoth;
-
-    if ((_presetActive['RAISE_BOTH'] ?? true) && raiseBoth) {
-      final cmd = _presetCmds['RAISE_BOTH'] ?? 'STOP';
-      _checkHold(
-          "PRESET_BOTH", true, cmd, _presetDurs['RAISE_BOTH'] ?? 1000, cmd);
-      _debugInfo = "Raising BOTH";
-      _debugColor = Colors.cyan;
-      return;
-    } else {
-      _checkHold("PRESET_BOTH", false, "", 0, "");
-    }
-
-    if (_presetActive['RAISE_RIGHT'] ?? true) {
-      final cmd = _presetCmds['RAISE_RIGHT'] ?? 'RAISE_RIGHT';
-      _checkHold("PRESET_ON", isRightHigh, cmd,
-          _presetDurs['RAISE_RIGHT'] ?? 1000, cmd);
-    }
-
-    if (_presetActive['RAISE_LEFT'] ?? true) {
-      final cmd = _presetCmds['RAISE_LEFT'] ?? 'RAISE_LEFT';
-      _checkHold("PRESET_OFF", isLeftHigh, cmd,
-          _presetDurs['RAISE_LEFT'] ?? 1000, cmd);
-    }
-
-    if (matchResult.match == null && _swipeState == SwipeState.idle) {
-      if (isRightHigh && (_presetActive['RAISE_RIGHT'] ?? true)) {
-        _debugInfo = "Raising RIGHT";
-        _debugColor = Colors.green;
-      } else if (isLeftHigh && (_presetActive['RAISE_LEFT'] ?? true)) {
-        _debugInfo = "Raising LEFT";
-        _debugColor = Colors.green;
-      } else if (raiseBoth && (_presetActive['RAISE_BOTH'] ?? true)) {
-        _debugInfo = "Raising BOTH";
-        _debugColor = Colors.cyan;
-      } else {
-        _debugInfo = "Stable (Waiting)";
-        _debugColor = Colors.white;
-      }
-    }
-  }
-
-  void _checkHold(String uniqueId, bool isDetected, String cmdToSend,
-      int duration, String bannerText) {
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-
-    if ((_cooldownUntil[uniqueId] ?? 0) > nowMs) {
-      _startAt.remove(uniqueId);
-      return;
-    }
-
-    if (isDetected) {
-      if (!_startAt.containsKey(uniqueId)) {
-        _startAt[uniqueId] = nowMs;
-      } else if (nowMs - _startAt[uniqueId]! >= duration) {
-        // ✅ เรียกฟังก์ชันกลาง (ส่งทั้ง HTTP และ RTDB)
-        _executeCommand(cmdToSend);
-
-        _cooldownUntil[uniqueId] = nowMs + cooldownMs;
-        _startAt.remove(uniqueId);
-      }
-    } else {
-      _startAt.remove(uniqueId);
-    }
-  }
-
   Future<void> _switchCamera() async {
     if (_cams.length < 2) return;
-    final wasStreaming = _streaming;
-    if (wasStreaming) {
-      await _toggleStream();
-    }
+    if (_streaming) await _toggleStream();
     _camIndex = (_camIndex + 1) % _cams.length;
     await _openCamera();
-
     if (mounted) setState(() {});
   }
 
   Future<void> _saveSessionData() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || _sessionStartTime == null) return;
-
     final endTime = DateTime.now();
     final durationSeconds = endTime.difference(_sessionStartTime!).inSeconds;
-
     if (durationSeconds < 5) return;
-
-    final double minutesPlayed = durationSeconds / 60.0;
-
     try {
       final userRef =
           FirebaseFirestore.instance.collection('users').doc(user.uid);
-
       await userRef.set({
         'stats': {
           'sessions': FieldValue.increment(1),
-          'total_minutes': FieldValue.increment(minutesPlayed),
+          'total_minutes': FieldValue.increment(durationSeconds / 60.0),
         }
       }, SetOptions(merge: true));
-
       await userRef.collection('history').add({
         'started_at': _sessionStartTime,
         'ended_at': endTime,
-        'duration_seconds': durationSeconds,
-        'commands_count': _commandCount,
+        'duration': durationSeconds,
+        'cmds': _commandCount,
       });
-
-      debugPrint(
-          "✅ Session Saved: ${minutesPlayed.toStringAsFixed(1)} mins, $_commandCount commands");
-    } catch (e) {
-      debugPrint("❌ Error Saving Session: $e");
-    }
+    } catch (_) {}
   }
 
   @override
   void dispose() {
-    if (_streaming) {
-      _saveSessionData();
-    }
+    if (_streaming) _saveSessionData();
     _cam?.dispose();
     _poseService?.dispose();
     _bannerTimer?.cancel();
@@ -733,8 +610,9 @@ class _StartCamPageState extends State<StartCamPage> {
       appBar: AppBar(
         title: const Text('Start Detect'),
         leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.pop(context)),
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.cameraswitch_rounded, color: Colors.black87),
@@ -774,26 +652,17 @@ class _StartCamPageState extends State<StartCamPage> {
                             style: TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold)),
-                        Text(_debugInfo,
+                        Text(_statusMessage,
                             style: TextStyle(
-                                color: _debugColor,
-                                fontSize: 16,
+                                color: _statusColor,
+                                fontSize: 18,
                                 fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 5),
-                        Text("Stable: ${_isStable ? 'YES' : 'NO'}",
-                            style: TextStyle(
-                                color: _isStable
-                                    ? Colors.greenAccent
-                                    : Colors.redAccent)),
-                        Text("Score: ${_movementScore.toStringAsFixed(1)}",
-                            style: const TextStyle(
-                                color: Colors.grey, fontSize: 10)),
-                        if (_streaming && _sessionStartTime != null) ...[
+                        if (_statusSubtext.isNotEmpty) ...[
                           const SizedBox(height: 4),
-                          Text("Cmds: $_commandCount",
+                          Text(_statusSubtext,
                               style: const TextStyle(
                                   color: Colors.white70, fontSize: 12)),
-                        ]
+                        ],
                       ],
                     ),
                   ),
@@ -848,75 +717,58 @@ class _StartCamPageState extends State<StartCamPage> {
   }
 }
 
-// (Helper Painter Class) - ยังวาดขาเหมือนเดิมตามที่ต้องการ
 class PoseOverlayPainter extends CustomPainter {
   final List<Pose> _poses;
   final Size? imageSize;
   final bool isFrontCamera;
-
   PoseOverlayPainter(this._poses, {this.imageSize, this.isFrontCamera = false});
-
   @override
   void paint(Canvas canvas, Size size) {
     if (_poses.isEmpty || imageSize == null) return;
-
     final double scaleX = size.width / imageSize!.width;
     final double scaleY = size.height / imageSize!.height;
-
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3.0
       ..color = Colors.greenAccent;
-
     final jointPaint = Paint()
       ..style = PaintingStyle.fill
       ..color = Colors.blue;
-
     for (var pose in _poses) {
-      pose.landmarks.forEach((_, landmark) {
-        double x = landmark.x * scaleX;
-        double y = landmark.y * scaleY;
-
-        if (isFrontCamera) {
-          x = size.width - x;
-        }
-
+      pose.landmarks.forEach((_, lm) {
+        double x = lm.x * scaleX;
+        double y = lm.y * scaleY;
+        if (isFrontCamera) x = size.width - x;
         canvas.drawCircle(Offset(x, y), 5, jointPaint);
       });
-
-      void paintLine(
-          PoseLandmarkType type1, PoseLandmarkType type2, Paint paintType) {
-        final PoseLandmark? joint1 = pose.landmarks[type1];
-        final PoseLandmark? joint2 = pose.landmarks[type2];
-        if (joint1 != null && joint2 != null) {
-          double x1 = joint1.x * scaleX;
-          double y1 = joint1.y * scaleY;
-          double x2 = joint2.x * scaleX;
-          double y2 = joint2.y * scaleY;
-
+      void paintLine(PoseLandmarkType t1, PoseLandmarkType t2) {
+        final j1 = pose.landmarks[t1];
+        final j2 = pose.landmarks[t2];
+        if (j1 != null && j2 != null) {
+          double x1 = j1.x * scaleX;
+          double y1 = j1.y * scaleY;
+          double x2 = j2.x * scaleX;
+          double y2 = j2.y * scaleY;
           if (isFrontCamera) {
             x1 = size.width - x1;
             x2 = size.width - x2;
           }
-
-          canvas.drawLine(Offset(x1, y1), Offset(x2, y2), paintType);
+          canvas.drawLine(Offset(x1, y1), Offset(x2, y2), paint);
         }
       }
 
-      paintLine(
-          PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow, paint);
-      paintLine(PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist, paint);
-      paintLine(
-          PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow, paint);
-      paintLine(
-          PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist, paint);
-      paintLine(
-          PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder, paint);
+      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow);
+      paintLine(PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist);
+      paintLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow);
+      paintLine(PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist);
+      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder);
+      paintLine(PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip);
+      paintLine(PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip);
+      paintLine(PoseLandmarkType.leftHip, PoseLandmarkType.rightHip);
     }
   }
 
   @override
-  bool shouldRepaint(covariant PoseOverlayPainter oldDelegate) {
-    return oldDelegate._poses != _poses || oldDelegate.imageSize != imageSize;
-  }
+  bool shouldRepaint(covariant PoseOverlayPainter old) =>
+      old._poses != _poses || old.imageSize != imageSize;
 }
