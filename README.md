@@ -1,6 +1,7 @@
 # rally_ui
 
-UI for Project with MLKIT
+UI for Project with MLKIT 
+Control your IOT device by your movement
 
 ให้ flutter create โปรเจคใหม่
 แล้ว copy pages แต่ละอันไปเพิ่ม และ copy pubspec ให้ครบ
