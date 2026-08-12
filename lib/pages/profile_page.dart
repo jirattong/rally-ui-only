@@ -526,7 +526,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
   bool _show = false;
   bool _isLoading = false;
 
-  // 🔥 1. เพิ่มฟังก์ชันตรวจสอบความปลอดภัยรหัสผ่าน (เหมือนหน้า Register)
+  // 1. เพิ่มฟังก์ชันตรวจสอบความปลอดภัยรหัสผ่าน (เหมือนหน้า Register)
   String? _validateStrict(String? v) {
     if (v == null || v.isEmpty) return 'Required';
     if (v.length < 8) return 'At least 8 characters'; // กฎ 1
@@ -600,14 +600,14 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                     key: _formKey,
                     child: Column(
                       children: [
-                        // รหัสปัจจุบัน (ไม่เช็คกฎเข้มงวด)
+                        // รหัสปัจจุบัน
                         _pwdField(_current, 'Current password'),
 
                         const SizedBox(height: 12),
                         const Divider(),
                         const SizedBox(height: 12),
 
-                        // 🔥 รหัสใหม่ (เช็คกฎเข้มงวด)
+                        // รหัสใหม่
                         _pwdField(_new, 'New password',
                             validator: _validateStrict),
 
@@ -644,7 +644,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
     );
   }
 
-  // ✅ แก้ไข _pwdField ให้รับ Validator แบบกำหนดเองได้
+  // แก้ไข _pwdField ให้รับ Validator แบบกำหนดเองได้
   Widget _pwdField(TextEditingController c, String label,
           {String? Function(String?)? validator}) =>
       TextFormField(
@@ -662,7 +662,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
       );
 }
 
-/// ============ หน้า Privacy (คงเดิม) ============
+/// ============ หน้า Privacy ============
 class PrivacyPage extends StatelessWidget {
   const PrivacyPage({super.key});
   @override

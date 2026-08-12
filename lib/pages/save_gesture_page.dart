@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui show Image, decodeImageFromList;
-import 'dart:math' as math; // ✅ เพิ่ม Import นี้สำหรับการกลับด้านรูป
+import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';

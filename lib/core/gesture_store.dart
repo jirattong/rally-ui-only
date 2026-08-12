@@ -140,7 +140,7 @@ class GestureStore {
     );
   }
 
-  // ---------------- 🔥 KNN MATCHING ENGINE 🔥 ----------------
+  // ----------------  KNN MATCHING ENGINE ----------------
 
   static ({PoseGesture? match, double score}) bestMatch(
     List<Offset> currentRaw,

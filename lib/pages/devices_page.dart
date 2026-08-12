@@ -1,6 +1,5 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 class DevicesPage extends StatefulWidget {
   const DevicesPage({super.key});
@@ -10,70 +9,70 @@ class DevicesPage extends StatefulWidget {
 }
 
 class _DevicesPageState extends State<DevicesPage> {
-  final _ipController = TextEditingController();
-  final _portController = TextEditingController();
   bool _isLoading = false;
+  bool _isConnected = false;
+  String _statusText = "Checking Firebase Connection...";
+
+  final DatabaseReference _rtdbRef = FirebaseDatabase.instance.ref();
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
+    _checkFirebaseConnection();
   }
 
-  // โหลดค่า IP/Port ที่เคยบันทึกไว้
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _ipController.text = prefs.getString('target_ip') ?? '192.168.1.50';
-      _portController.text = prefs.getString('target_port') ?? '5000';
-    });
-  }
+  // ✅ ทดสอบการเชื่อมต่อกับ Firebase Realtime Database
+  Future<void> _checkFirebaseConnection() async {
+    setState(() => _isLoading = true);
+    try {
+      // ลองดึงค่าจาก Node command_payload/current_command
+      DataSnapshot snapshot = await _rtdbRef
+          .child('command_payload/current_command')
+          .get()
+          .timeout(const Duration(seconds: 4));
 
-  // ✅ บันทึกค่าและทดสอบการเชื่อมต่อกับ Server
-  Future<void> _saveSettings() async {
-    if (_ipController.text.isEmpty || _portController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter both IP and Port')),
-      );
-      return;
+      if (mounted) {
+        setState(() {
+          _isConnected = true;
+          _statusText = "Connected to Firebase Realtime Database";
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isConnected = false;
+          _statusText = "Cannot reach Firebase: $e";
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
 
+  // ✅ ส่งคำสั่งทดสอบ (Test Ping) ไปยัง 3D Simulator ผ่าน Firebase
+  Future<void> _sendTestPing() async {
     setState(() => _isLoading = true);
 
-    final ip = _ipController.text.trim();
-    final port = int.tryParse(_portController.text.trim()) ?? 5000;
-
-    // 1. บันทึกค่าลง SharedPreferences (ในเครื่อง)
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('target_ip', ip);
-    await prefs.setString('target_port', port.toString());
-
-    // 2. 🔥 ทดสอบเชื่อมต่อและส่งข้อความแจ้ง Server ทันที 🔥
     try {
-      // พยายามเชื่อมต่อ (Timeout 2 วินาที)
-      Socket socket =
-          await Socket.connect(ip, port, timeout: const Duration(seconds: 2));
-
-      // ส่งคำทักทายเพื่อให้หน้าจอ Server ของอาจารย์ขึ้นข้อความ
-      socket.write("DEVICE_CONNECTED");
-
-      await socket.flush();
-      await socket.close();
+      // ยิงคำสั่ง SHOOT เป็นการทดสอบยิงปืนใน 3D Simulator
+      await _rtdbRef.child('command_payload/current_command').set({
+        'cmd': 'SHOOT',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Settings saved & Connected to Server!'),
+            content: Text('Test Signal (SHOOT) Sent to 3D Simulator!'),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e) {
-      // หากเชื่อมต่อไม่ได้ (Server ไม่ได้เปิด หรือ IP ผิด)
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Saved, but cannot reach Server: $e'),
+            content: Text('Failed to send signal: $e'),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -96,7 +95,7 @@ class _DevicesPageState extends State<DevicesPage> {
         backgroundColor: bg,
         elevation: 0,
         title: const Text(
-          'TurtleSim Connection',
+          'Simulator Connection',
           style: TextStyle(
             fontWeight: FontWeight.w900,
             color: titleColor,
@@ -113,19 +112,21 @@ class _DevicesPageState extends State<DevicesPage> {
           children: [
             Container(
               padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: cardColor,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.router_rounded,
+              child: Icon(
+                _isConnected
+                    ? Icons.cloud_done_rounded
+                    : Icons.cloud_off_rounded,
                 size: 64,
-                color: accentColor,
+                color: _isConnected ? Colors.green : accentColor,
               ),
             ),
             const SizedBox(height: 32),
             const Text(
-              "Enter Computer Network Info",
+              "Rally 3D Simulator Target",
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w900,
@@ -133,29 +134,59 @@ class _DevicesPageState extends State<DevicesPage> {
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              "Connect to the Python server running on your computer to control TurtleSim.",
+            Text(
+              "Status: $_statusText",
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: Colors.black54,
+                color: _isConnected ? Colors.green[700] : Colors.black54,
+                fontWeight: FontWeight.bold,
                 fontSize: 14,
               ),
             ),
             const SizedBox(height: 32),
-            _buildTextField(
-              controller: _ipController,
-              label: "Computer IP Address",
-              hint: "e.g., 192.168.1.50",
-              icon: Icons.wifi,
+
+            // Card แสดงรายละเอียดการเชื่อมต่อ
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Target Realtime Database Path",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: titleColor,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    "/command_payload/current_command",
+                    style: TextStyle(
+                      color: accentColor,
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 16),
-            _buildTextField(
-              controller: _portController,
-              label: "Port Number",
-              hint: "e.g., 5000",
-              icon: Icons.numbers,
-            ),
+
             const SizedBox(height: 40),
+
+            // ปุ่มส่งสัญญาณทดสอบไปที่ Simulator
             SizedBox(
               width: double.infinity,
               height: 54,
@@ -167,7 +198,7 @@ class _DevicesPageState extends State<DevicesPage> {
                   ),
                   elevation: 0,
                 ),
-                onPressed: _isLoading ? null : _saveSettings,
+                onPressed: _isLoading ? null : _sendTestPing,
                 child: _isLoading
                     ? const SizedBox(
                         width: 24,
@@ -178,7 +209,7 @@ class _DevicesPageState extends State<DevicesPage> {
                         ),
                       )
                     : const Text(
-                        "SAVE & TEST CONNECTION",
+                        "SEND TEST SIGNAL (SHOOT)",
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w800,
@@ -188,60 +219,21 @@ class _DevicesPageState extends State<DevicesPage> {
                       ),
               ),
             ),
+            const SizedBox(height: 12),
+
+            // ปุ่มรีเฟรชเช็คการเชื่อมต่อ
+            TextButton.icon(
+              onPressed: _checkFirebaseConnection,
+              icon: const Icon(Icons.refresh, color: titleColor),
+              label: const Text(
+                "Re-check Connection",
+                style:
+                    TextStyle(color: titleColor, fontWeight: FontWeight.bold),
+              ),
+            ),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required String label,
-    required String hint,
-    required IconData icon,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Color(0xFF3A5150),
-            fontSize: 14,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: TextField(
-            controller: controller,
-            keyboardType:
-                TextInputType.text, // เปลี่ยนเป็น text เพื่อรองรับ IP format
-            style: const TextStyle(fontWeight: FontWeight.w600),
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: TextStyle(color: Colors.grey.withOpacity(0.6)),
-              prefixIcon: Icon(icon, color: Colors.deepOrange),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 16,
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

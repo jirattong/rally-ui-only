@@ -19,7 +19,7 @@ class PoseService {
     await _poseDetector.close();
   }
 
-  // ✅ ฟังก์ชันที่หายไป: ใช้ในหน้า SaveGesturePage (Upload/Capture)
+  // ใช้ในหน้า SaveGesturePage (Upload/Capture)
   Future<List<Pose>> processImage(InputImage inputImage) async {
     if (_isBusy) return [];
     _isBusy = true;

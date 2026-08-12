@@ -41,7 +41,7 @@ class RallyApp extends StatelessWidget {
       home: const AuthGate(),
 
       routes: {
-        // '/': (context) => const LandingPage(), // ❌ ไม่ต้องมี '/' แล้ว เพราะใช้ AuthGate
+        // '/': (context) => const LandingPage(), // ไม่ต้องมี '/' แล้ว เพราะใช้ AuthGate
         '/home': (context) => const HomePage(),
         '/Log_Reg': (context) => const LogRegPage(),
         '/Start_Cam': (context) => const StartCamPage(),
@@ -55,7 +55,7 @@ class RallyApp extends StatelessWidget {
   }
 }
 
-// 🔥 Widget ยามเฝ้าประตู (Auth Gate)
+// Widget ยามเฝ้าประตู (Auth Gate)
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 

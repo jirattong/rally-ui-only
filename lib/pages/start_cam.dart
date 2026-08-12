@@ -154,7 +154,7 @@ class _StartCamPageState extends State<StartCamPage> {
         command: realCmd,
         holdDuration: dur,
         isActive: isActive,
-        threshold: thr, // ✅ ใช้ Threshold จาก Slider ที่โหลดมา
+        threshold: thr, // ใช้ Threshold จาก Slider ที่โหลดมา
         keypoints: p.keypoints,
         angles: p.angles,
       ));
@@ -261,7 +261,7 @@ class _StartCamPageState extends State<StartCamPage> {
             if (ps.isNotEmpty) {
               final pose = ps.first;
               _checkStability(pose);
-              // ✅ เรียกใช้ KNN Logic (ที่ลบ Hardcoded แล้ว)
+              // เรียกใช้ KNN Logic
               _evaluateHoldGestures(pose);
               _checkForSwipe(pose);
             } else {
@@ -342,7 +342,7 @@ class _StartCamPageState extends State<StartCamPage> {
   }
 
   // ----------------------------------------------------------------------
-  // 🔥 [PURE KNN] Logic: ใช้เฉพาะ KNN เท่านั้น ไม่มี Hardcoded ปน
+  // [PURE KNN] Logic: ใช้เฉพาะ KNN
   // ----------------------------------------------------------------------
   void _evaluateHoldGestures(Pose pose) {
     if (DateTime.now().difference(_lastSwipeTime).inMilliseconds < 2000) return;
@@ -385,7 +385,7 @@ class _StartCamPageState extends State<StartCamPage> {
           : "Stabilizing... (Move: ${_movementScore.toStringAsFixed(1)})";
 
       if (_isStable) {
-        // 🔥 ส่ง g.command ไปโชว์ใน Pop-up
+        // ส่ง g.command ไปโชว์ใน Pop-up
         _checkHold(g.id, true, g.command, g.holdDuration, g.command);
       } else {
         _startAt.remove("CUSTOM_${g.id}");
@@ -413,7 +413,7 @@ class _StartCamPageState extends State<StartCamPage> {
       if (!_startAt.containsKey(uniqueId)) {
         _startAt[uniqueId] = nowMs;
       } else if (nowMs - _startAt[uniqueId]! >= duration) {
-        // ✅ ส่ง command เป็น bannerText ไปแสดงผล
+        // ส่ง command เป็น bannerText ไปแสดงผล
         _executeCommand(cmdToSend, displayText: bannerText);
         _cooldownUntil[uniqueId] = nowMs + cooldownMs;
         _startAt.remove(uniqueId);
@@ -439,7 +439,7 @@ class _StartCamPageState extends State<StartCamPage> {
     _commandCount++;
     _showBanner(displayText ?? command); // โชว์ Command สีเขียวกลางจอ
     print(
-        "🚀 Command: $command (Show: ${displayText ?? command}) -> $_targetIp:$_targetPort");
+        " Command: $command (Show: ${displayText ?? command}) -> $_targetIp:$_targetPort");
 
     try {
       int port = int.tryParse(_targetPort) ?? 5000;
@@ -448,9 +448,9 @@ class _StartCamPageState extends State<StartCamPage> {
       socket.write(command);
       await socket.flush();
       await socket.close();
-      print("✅ Sent TCP: $command");
+      print(" Sent TCP: $command");
     } catch (e) {
-      print("❌ Socket Error: $e");
+      print(" Socket Error: $e");
     }
     try {
       await _rtdbRef.child('iot_device').update({
@@ -494,7 +494,7 @@ class _StartCamPageState extends State<StartCamPage> {
 
     switch (_swipeState) {
       case SwipeState.idle:
-        // ✅ เช็ค Disable ของท่าปัด
+        // เช็ค Disable ของท่าปัด
         bool canSwipeRight =
             r_AtChest && (_presetActive['SWIPE_RIGHT'] ?? true);
         bool canSwipeLeft = r_AtSide && (_presetActive['SWIPE_LEFT'] ?? true);
