@@ -738,7 +738,8 @@ class PoseOverlayPainter extends CustomPainter {
       pose.landmarks.forEach((_, lm) {
         double x = lm.x * scaleX;
         double y = lm.y * scaleY;
-        if (isFrontCamera) x = size.width - x;
+        // แก้ไข: บน iOS บางเวอร์ชัน CameraPreview ซ้อนภาพให้แล้ว ถ้าใส่ size.width - x ภาพจะกลับด้านกัน
+        // if (isFrontCamera) x = size.width - x;
         canvas.drawCircle(Offset(x, y), 5, jointPaint);
       });
       void paintLine(PoseLandmarkType t1, PoseLandmarkType t2) {
@@ -749,10 +750,10 @@ class PoseOverlayPainter extends CustomPainter {
           double y1 = j1.y * scaleY;
           double x2 = j2.x * scaleX;
           double y2 = j2.y * scaleY;
-          if (isFrontCamera) {
-            x1 = size.width - x1;
-            x2 = size.width - x2;
-          }
+          // if (isFrontCamera) {
+          //   x1 = size.width - x1;
+          //   x2 = size.width - x2;
+          // }
           canvas.drawLine(Offset(x1, y1), Offset(x2, y2), paint);
         }
       }
