@@ -1,4 +1,4 @@
-# rally_new
+# Rally
 
 A new Flutter project.
 
